@@ -1,5 +1,4 @@
-/* global HandwritingStroke */
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useImperativeHandle } from 'react';
 import './App.css';
 
 const FONT_FAMILIES = ['Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Comic Sans MS'];
@@ -79,6 +78,7 @@ export default function App() {
   const [convertError, setConvertError] = useState(null);
   const editorRef = useRef(null);
   const editorScrollRef = useRef(null);
+  const drawingCanvasRef = useRef(null);
   const savedRangeRef = useRef(null);
   const [formats, setFormats] = useState({});
   const [color, setColor] = useState('#000000');
@@ -97,7 +97,6 @@ export default function App() {
     if (editorRef.current) editorRef.current.innerHTML = activeNote?.content || '';
   }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-dismiss conversion error after 3.5 s
   useEffect(() => {
     if (!convertError) return;
     const t = setTimeout(() => setConvertError(null), 3500);
@@ -183,28 +182,63 @@ export default function App() {
     setConvertError(null);
 
     try {
-      if (!('handwriting' in navigator)) throw new Error('no-support');
+      const canvas = drawingCanvasRef.current?.getCanvas();
+      if (!canvas) throw new Error('no-canvas');
 
-      const recognizer = await navigator.handwriting.createRecognizer({ languages: ['en'] });
-      const drawing    = recognizer.startDrawing({ hints: { recognitionType: 'text', inputType: 'mouse' } });
+      // Crop to the bounding box of strokes so we send a focused image
+      const allPts = strokes.flatMap(s => s.pts);
+      const dpr    = window.devicePixelRatio || 1;
+      const pad    = 24;
+      const minX   = Math.max(0, Math.min(...allPts.map(p => p.x)) - pad);
+      const maxX   = Math.min(canvas.offsetWidth,  Math.max(...allPts.map(p => p.x)) + pad);
+      const minY   = Math.max(0, Math.min(...allPts.map(p => p.y)) - pad);
+      const maxY   = Math.min(canvas.offsetHeight, Math.max(...allPts.map(p => p.y)) + pad);
+      const cropW  = Math.max(1, maxX - minX);
+      const cropH  = Math.max(1, maxY - minY);
 
-      for (const stroke of strokes) {
-        const s = new HandwritingStroke(); // eslint-disable-line no-undef
-        for (const p of stroke.pts) s.addPoint({ x: p.x, y: p.y, t: p.t ?? 0 });
-        drawing.addStroke(s);
-      }
+      // Render cropped strokes onto a white-background canvas for Claude
+      const tmp = document.createElement('canvas');
+      tmp.width  = Math.round(cropW * dpr);
+      tmp.height = Math.round(cropH * dpr);
+      const tmpCtx = tmp.getContext('2d');
+      tmpCtx.fillStyle = '#ffffff';
+      tmpCtx.fillRect(0, 0, tmp.width, tmp.height);
+      tmpCtx.drawImage(
+        canvas,
+        Math.round(minX * dpr), Math.round(minY * dpr),
+        Math.round(cropW * dpr), Math.round(cropH * dpr),
+        0, 0, tmp.width, tmp.height
+      );
 
-      const results = await drawing.getPrediction();
-      const rawText = results?.[0]?.text;
+      const base64Data = tmp.toDataURL('image/png').split(',')[1];
+
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1024,
+          system: 'You are a handwriting recognition assistant. The user will send you an image of handwritten notes on a canvas. Your job is to transcribe the handwriting as accurately as possible into plain text. Preserve the structure of the writing — if there are bullet points transcribe them as bullet points, if there are numbered lists transcribe them as numbered lists, if there are multiple lines keep them as separate lines, if there are indentations preserve them. Return only the transcribed text with no explanation or commentary.',
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64Data } },
+              { type: 'text', text: 'Transcribe the handwriting in this image.' },
+            ],
+          }],
+        }),
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data    = await response.json();
+      const rawText = data.content?.[0]?.text;
       if (!rawText?.trim()) throw new Error('empty');
 
       const html = formatRecognizedText(rawText);
 
-      // Find the vertical centre of all strokes (in canvas/scroll coords)
-      const allPts = strokes.flatMap(s => s.pts);
-      const avgY   = allPts.reduce((sum, p) => sum + p.y, 0) / allPts.length;
+      // Use the vertical center of strokes to find the right insertion point
+      const avgY = allPts.reduce((sum, p) => sum + p.y, 0) / allPts.length;
 
-      // Switch to typing mode so contentEditable is restored
       setDrawMode(false);
       setEraserActive(false);
       await new Promise(r => requestAnimationFrame(r));
@@ -234,12 +268,8 @@ export default function App() {
 
       updateStrokes([]);
     } catch (err) {
-      if (err.message === 'no-support') {
-        setConvertError('Handwriting recognition requires Chrome on Windows or Android.');
-      } else {
-        console.warn('Convert:', err);
-        setConvertError('Could not read handwriting — please try again.');
-      }
+      console.warn('Convert:', err);
+      setConvertError('Could not convert handwriting — please try again.');
     } finally {
       setConverting(false);
     }
@@ -350,7 +380,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Scroll-zone hint strip — visible only in draw mode */}
         {drawMode && <div className="scroll-zone-hint" />}
 
         <div
@@ -370,6 +399,7 @@ export default function App() {
               onBlur={saveRange}
             />
             <DrawingCanvas
+              ref={drawingCanvasRef}
               noteId={eid}
               initialStrokes={activeNote?.strokes || []}
               onStrokesChange={updateStrokes}
@@ -389,21 +419,37 @@ export default function App() {
 // ── Drawing Canvas ──────────────────────────────────────────────────────────────
 
 const SCROLL_ZONE_PX = 60;
+const ERASER_RADIUS  = 20;
 
-function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eraser, scrollElRef }) {
+const DrawingCanvas = React.forwardRef(function DrawingCanvas(
+  { noteId, initialStrokes, onStrokesChange, drawMode, eraser, scrollElRef },
+  ref
+) {
   const canvasRef      = useRef(null);
   const ctxRef         = useRef(null);
   const strokesRef     = useRef([...(initialStrokes || [])]);
   const liveRef        = useRef(null);
+  const eraserPosRef   = useRef(null);
   const isDrawingRef   = useRef(false);
   const isScrollRef    = useRef(false);
   const lastScrollYRef = useRef(0);
+
+  // Expose canvas element to parent via ref
+  useImperativeHandle(ref, () => ({
+    getCanvas: () => canvasRef.current,
+  }));
 
   // Reload strokes when the active note changes
   useEffect(() => {
     strokesRef.current = [...(initialStrokes || [])];
     redraw();
   }, [noteId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear eraser cursor and redraw when eraser mode toggles
+  useEffect(() => {
+    if (!eraser) eraserPosRef.current = null;
+    redraw();
+  }, [eraser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Size canvas to match its parent (.editor-layer) and redraw on resize
   useEffect(() => {
@@ -436,6 +482,19 @@ function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eras
     ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
     for (const s of strokesRef.current) paintStroke(ctx, s.pts);
     if (liveRef.current) paintStroke(ctx, liveRef.current.pts);
+    // Draw eraser cursor circle so the user can see the erase radius
+    if (eraser && eraserPosRef.current) {
+      const { x, y } = eraserPosRef.current;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, ERASER_RADIUS, 0, Math.PI * 2);
+      ctx.fillStyle   = 'rgba(255, 255, 255, 0.55)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(20, 20, 20, 0.75)';
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   function paintStroke(ctx, pts) {
@@ -474,10 +533,9 @@ function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eras
   }
 
   function eraseAt(pt) {
-    const R = 20;
     const before = strokesRef.current.length;
     strokesRef.current = strokesRef.current.filter(s =>
-      !s.pts.some(p => Math.hypot(p.x - pt.x, p.y - pt.y) < R)
+      !s.pts.some(p => Math.hypot(p.x - pt.x, p.y - pt.y) < ERASER_RADIUS)
     );
     if (strokesRef.current.length !== before) redraw();
   }
@@ -488,7 +546,6 @@ function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eras
     if (!scrollEl) return;
     const rect = scrollEl.getBoundingClientRect();
 
-    // Rightmost SCROLL_ZONE_PX is a dedicated scroll strip
     if (e.clientX >= rect.right - SCROLL_ZONE_PX) {
       isScrollRef.current    = true;
       lastScrollYRef.current = e.clientY;
@@ -500,8 +557,11 @@ function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eras
     canvasRef.current.setPointerCapture(e.pointerId);
     isDrawingRef.current = true;
     const pt = getPoint(e);
+    if (eraser) {
+      eraserPosRef.current = pt;
+      eraseAt(pt);
+    }
     liveRef.current = { pts: [pt], erasing: eraser };
-    if (eraser) eraseAt(pt);
     redraw();
   }
 
@@ -512,12 +572,29 @@ function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eras
       lastScrollYRef.current = e.clientY;
       return;
     }
+
+    // Always track eraser position for the cursor circle (even when hovering)
+    if (eraser && drawMode) {
+      eraserPosRef.current = getPoint(e);
+      if (!isDrawingRef.current) {
+        redraw();
+        return;
+      }
+    }
+
     if (!isDrawingRef.current || !liveRef.current) return;
     e.preventDefault();
     const pt = getPoint(e);
     liveRef.current = { ...liveRef.current, pts: [...liveRef.current.pts, pt] };
     if (eraser) eraseAt(pt);
     redraw();
+  }
+
+  function onPointerLeave() {
+    if (eraser && eraserPosRef.current) {
+      eraserPosRef.current = null;
+      redraw();
+    }
   }
 
   function onPointerUp() {
@@ -535,7 +612,8 @@ function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eras
     redraw();
   }
 
-  const cursor = !drawMode ? 'default' : eraser ? 'cell' : 'crosshair';
+  // Hide system cursor when eraser is active — we draw our own circle cursor
+  const cursor = !drawMode ? 'default' : eraser ? 'none' : 'crosshair';
 
   return (
     <canvas
@@ -546,9 +624,10 @@ function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eras
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      onPointerLeave={onPointerLeave}
     />
   );
-}
+});
 
 // ── Icons ───────────────────────────────────────────────────────────────────────
 
