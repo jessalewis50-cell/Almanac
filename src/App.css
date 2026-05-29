@@ -134,6 +134,13 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
 
 .editor-scroll {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; min-height: 0;
+  position: relative;
+}
+
+/* Wrapper that fills the scroll container and gives the canvas an anchor */
+.editor-layer {
+  position: relative;
+  min-height: 100%;
 }
 
 .editor {
@@ -158,43 +165,27 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
   background-position: 0 var(--editor-pad-top);
 }
 
-/* ── Handwriting panel ───────────────────────────────────── */
-
-.hw-panel {
-  flex-shrink: 0; display: flex; flex-direction: column;
-  border-top: 2px solid #bfdbfe; background: #fdfdf5;
+/* In draw mode: hide the text cursor and block pointer events to the editor */
+.editor.draw-mode {
+  pointer-events: none;
+  user-select: none;
+  caret-color: transparent;
 }
 
-.hw-bar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; background: #eff6ff;
-  border-bottom: 1px solid #bfdbfe; gap: 8px; flex-shrink: 0;
-}
-.hw-hint { font-size: 13px; color: #475569; flex: 1; }
-.hw-btns { display: flex; gap: 6px; flex-shrink: 0; }
+/* ── Drawing canvas ──────────────────────────────────────── */
 
-.hw-btn {
-  height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid #cbd5e1;
-  background: #fff; color: #374151; font-size: 13px; font-weight: 500;
-  cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
-  white-space: nowrap;
+.draw-canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  touch-action: auto;
+  z-index: 1;
 }
-.hw-btn:disabled { opacity: 0.4; cursor: default; }
-.hw-btn.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
-.hw-btn.primary:active { background: #1d4ed8; }
-.hw-btn.close-hw { padding: 0 12px; font-size: 16px; }
-
-.hw-canvas {
-  width: 100%; display: block; cursor: crosshair;
+.draw-canvas.active {
+  pointer-events: all;
   touch-action: none;
 }
-
-.hw-unsupported {
-  padding: 20px 24px; color: #475569; font-size: 14px;
-  background: #fdf4ff;
-}
-.hw-unsupported strong { color: #7c3aed; }
-.hw-unsupported p { margin: 6px 0 0; }
 
 /* ── Touch refinements ───────────────────────────────────── */
 

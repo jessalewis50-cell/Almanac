@@ -18,7 +18,9 @@
       "Bash(Sort-Object FullName)",
       "Bash(grep -E \"\\\\.\\(jsx|js|tsx|ts|css|html|json\\)$\")",
       "Bash(npx react-scripts *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }

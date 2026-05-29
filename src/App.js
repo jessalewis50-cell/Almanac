@@ -1,4 +1,3 @@
-/* global HandwritingStroke */
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import './App.css';
 
@@ -7,12 +6,9 @@ const FONT_SIZES = [
   { label: '10pt', value: '1' }, { label: '13pt', value: '2' }, { label: '16pt', value: '3' },
   { label: '18pt', value: '4' }, { label: '24pt', value: '5' }, { label: '32pt', value: '6' }, { label: '48pt', value: '7' },
 ];
-const HW_LINE_H = 64;
-const HW_LINES = 3;
-const HW_BASELINE = 0.72;
 
 function makeNote() {
-  return { id: Date.now(), title: 'Untitled', content: '', updatedAt: new Date().toISOString() };
+  return { id: Date.now(), title: 'Untitled', content: '', strokes: [], updatedAt: new Date().toISOString() };
 }
 function stripHtml(h) { return h.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(); }
 function formatDate(iso) {
@@ -33,8 +29,10 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem('notes-active')); } catch { return null; }
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [hwMode, setHwMode] = useState(false);
+  const [drawMode, setDrawMode] = useState(false);
+  const [eraserActive, setEraserActive] = useState(false);
   const editorRef = useRef(null);
+  const editorScrollRef = useRef(null);
   const savedRangeRef = useRef(null);
   const [formats, setFormats] = useState({});
   const [color, setColor] = useState('#000000');
@@ -117,11 +115,12 @@ export default function App() {
   const applySize  = useCallback((e) => { restoreRange(); document.execCommand('fontSize', false, e.target.value); editorRef.current?.focus(); }, [restoreRange]);
   const applyColor = useCallback((e) => { const c = e.target.value; setColor(c); restoreRange(); document.execCommand('foreColor', false, c); editorRef.current?.focus(); }, [restoreRange]);
 
-  const insertText = useCallback((text) => {
-    editorRef.current?.focus(); restoreRange();
-    document.execCommand('insertText', false, text + ' ');
-    onEditorInput();
-  }, [restoreRange, onEditorInput]);
+  const updateStrokes = useCallback((newStrokes) => {
+    setNotes(p => p.map(n => n.id === eid
+      ? { ...n, strokes: newStrokes, updatedAt: new Date().toISOString() }
+      : n
+    ));
+  }, [eid]);
 
   return (
     <div className="app">
@@ -149,9 +148,6 @@ export default function App() {
         <div className="topbar">
           <button className="tbtn" onPointerDown={() => setSidebarOpen(s => !s)} title="All notes"><MenuIcon /></button>
           <input className="title-input" value={activeNote?.title || ''} onChange={e => setTitle(e.target.value)} placeholder="Untitled" />
-          <button className={`tbtn${hwMode ? ' active' : ''}`} onPointerDown={() => setHwMode(m => !m)} title={hwMode ? 'Keyboard' : 'Handwrite'}>
-            {hwMode ? <KeyboardIcon /> : <PenIcon />}
-          </button>
         </div>
 
         <div className="toolbar" role="toolbar">
@@ -197,212 +193,213 @@ export default function App() {
           <div className="toolbar-group">
             <button className={tbtn(lined)} onPointerDown={() => setLined(l => !l)} title={lined ? 'Plain page' : 'Lined page'}><LinesIcon /></button>
           </div>
+          <span className="tb-div" />
+          <div className="toolbar-group">
+            <button
+              className={tbtn(drawMode)}
+              onPointerDown={() => { setDrawMode(m => !m); setEraserActive(false); }}
+              title={drawMode ? 'Switch to typing' : 'Switch to drawing'}
+            >
+              {drawMode ? <KeyboardIcon /> : <PenIcon />}
+            </button>
+            {drawMode && (
+              <button
+                className={tbtn(eraserActive)}
+                onPointerDown={() => setEraserActive(e => !e)}
+                title={eraserActive ? 'Switch to pen' : 'Eraser'}
+              >
+                <EraserIcon />
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="editor-scroll">
-          <div
-            ref={editorRef}
-            className={`editor${lined ? ' lined' : ''}`}
-            contentEditable
-            suppressContentEditableWarning
-            role="textbox"
-            aria-multiline="true"
-            data-placeholder="Start typing your note…"
-            onInput={onEditorInput}
-            onBlur={saveRange}
-          />
+        <div className="editor-scroll" ref={editorScrollRef}>
+          <div className="editor-layer">
+            <div
+              ref={editorRef}
+              className={`editor${lined ? ' lined' : ''}${drawMode ? ' draw-mode' : ''}`}
+              contentEditable={!drawMode}
+              suppressContentEditableWarning
+              role="textbox"
+              aria-multiline="true"
+              data-placeholder="Start typing your note…"
+              onInput={onEditorInput}
+              onBlur={saveRange}
+            />
+            <DrawingCanvas
+              noteId={eid}
+              initialStrokes={activeNote?.strokes || []}
+              onStrokesChange={updateStrokes}
+              drawMode={drawMode}
+              eraser={eraserActive}
+              scrollElRef={editorScrollRef}
+            />
+          </div>
         </div>
-
-        {hwMode && <HandwritingCanvas onText={insertText} onClose={() => setHwMode(false)} />}
       </div>
     </div>
   );
 }
 
-// ── Handwriting Canvas ──────────────────────────────────────────────────────────
+// ── Drawing Canvas ──────────────────────────────────────────────────────────────
 
-function HandwritingCanvas({ onText, onClose }) {
-  const canvasRef   = useRef(null);
-  const ctxRef      = useRef(null);
-  const recognizer  = useRef(null);
-  const drawing     = useRef(null);
-  const strokes     = useRef([]);
-  const live        = useRef(null);
-  const timer       = useRef(null);
-  const [status,    setStatus]    = useState('idle');   // idle | drawing | recognizing
-  const [supported, setSupported] = useState(null);     // null | true | false
-  const H = HW_LINES * HW_LINE_H + 24;
+function DrawingCanvas({ noteId, initialStrokes, onStrokesChange, drawMode, eraser, scrollElRef }) {
+  const canvasRef      = useRef(null);
+  const ctxRef         = useRef(null);
+  const strokesRef     = useRef([...(initialStrokes || [])]);
+  const liveRef        = useRef(null);
+  const isDrawingRef   = useRef(false);
+  const isScrollRef    = useRef(false);
+  const lastScrollYRef = useRef(0);
 
-  // Init recognizer
+  // Reload strokes when the active note changes
   useEffect(() => {
-    (async () => {
-      if (!('handwriting' in navigator)) { setSupported(false); return; }
-      try {
-        recognizer.current = await navigator.handwriting.createRecognizer({ languages: ['en'] });
-        resetDrawing();
-        setSupported(true);
-      } catch { setSupported(false); }
-    })();
-    return () => clearTimeout(timer.current);
-  }, []); // eslint-disable-line
+    strokesRef.current = [...(initialStrokes || [])];
+    redraw();
+  }, [noteId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Init canvas with ResizeObserver so it stays crisp on resize
+  // Size canvas to match its parent (.editor-layer) and redraw on resize
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    function setup() {
+    function resize() {
+      const parent = canvas.parentElement;
+      if (!parent) return;
       const dpr = window.devicePixelRatio || 1;
-      const w = canvas.offsetWidth, h = canvas.offsetHeight;
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
       if (!w || !h) return;
-      canvas.width  = w * dpr;
-      canvas.height = h * dpr;
+      canvas.width  = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
       const ctx = canvas.getContext('2d');
       ctx.scale(dpr, dpr);
       ctxRef.current = ctx;
-      paintAll();
+      redraw();
     }
-    setup();
-    const ro = new ResizeObserver(setup);
-    ro.observe(canvas);
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(canvas.parentElement);
     return () => ro.disconnect();
-  }, []); // eslint-disable-line
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function resetDrawing() {
-    if (!recognizer.current) return;
-    try { drawing.current = recognizer.current.startDrawing({ hints: { recognitionType: 'text', inputType: 'touch' } }); } catch {}
-  }
-
-  function paintBg(ctx, w) {
-    ctx.fillStyle = '#fdfdf5';
-    ctx.fillRect(0, 0, w, H);
-    for (let i = 0; i < HW_LINES; i++) {
-      const top  = 12 + i * HW_LINE_H;
-      const base = 12 + (i + HW_BASELINE) * HW_LINE_H;
-      // Cap-height guide
-      ctx.strokeStyle = '#ddeef8'; ctx.lineWidth = 0.8;
-      ctx.beginPath(); ctx.moveTo(0, top + HW_LINE_H * 0.14); ctx.lineTo(w, top + HW_LINE_H * 0.14); ctx.stroke();
-      // Baseline
-      ctx.strokeStyle = '#a8c8e8'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(0, base); ctx.lineTo(w, base); ctx.stroke();
-    }
-  }
-
-  function paintInk(ctx, list) {
-    ctx.strokeStyle = '#1a1a2e'; ctx.lineWidth = 2.5;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    for (const pts of list) {
-      if (pts.length < 2) continue;
-      ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length - 1; i++) {
-        const mx = (pts[i].x + pts[i+1].x) / 2, my = (pts[i].y + pts[i+1].y) / 2;
-        ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
-      }
-      ctx.lineTo(pts[pts.length-1].x, pts[pts.length-1].y); ctx.stroke();
-    }
-  }
-
-  function paintAll() {
-    const canvas = canvasRef.current, ctx = ctxRef.current;
-    if (!canvas || !ctx) return;
+  function redraw() {
+    const ctx = ctxRef.current, canvas = canvasRef.current;
+    if (!ctx || !canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    const w = canvas.width / dpr;
-    paintBg(ctx, w);
-    paintInk(ctx, [...strokes.current, ...(live.current ? [live.current] : [])]);
+    ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+    for (const s of strokesRef.current) paintStroke(ctx, s.pts);
+    if (liveRef.current) paintStroke(ctx, liveRef.current.pts);
   }
 
-  // Soft-snap Y to nearest ruled line so strokes stay orderly and don't droop
-  function snapY(rawY) {
-    const lineIdx = Math.max(0, Math.min(HW_LINES - 1, Math.floor((rawY - 12) / HW_LINE_H)));
-    const baseline = 12 + (lineIdx + HW_BASELINE) * HW_LINE_H;
-    const dev = rawY - baseline;
-    const cap = HW_LINE_H * 0.47;
-    return baseline + Math.tanh(dev / (cap * 0.65)) * cap;
+  function paintStroke(ctx, pts) {
+    if (!pts || pts.length === 0) return;
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.lineWidth   = 2.5;
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = 'round';
+    if (pts.length === 1) {
+      ctx.beginPath();
+      ctx.arc(pts[0].x, pts[0].y, 1.25, 0, Math.PI * 2);
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fill();
+      return;
+    }
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2;
+      const my = (pts[i].y + pts[i + 1].y) / 2;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+    }
+    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+    ctx.stroke();
   }
 
   function getPoint(e) {
-    const r = canvasRef.current.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: snapY(e.clientY - r.top), t: Date.now() };
+    const scrollEl = scrollElRef.current;
+    if (!scrollEl) return { x: 0, y: 0 };
+    const rect = scrollEl.getBoundingClientRect();
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top + scrollEl.scrollTop,
+    };
   }
 
-  function onDown(e) {
-    canvasRef.current.setPointerCapture(e.pointerId);
-    clearTimeout(timer.current);
-    live.current = [getPoint(e)];
-    setStatus('drawing');
+  function eraseAt(pt) {
+    const R = 20;
+    const before = strokesRef.current.length;
+    strokesRef.current = strokesRef.current.filter(s =>
+      !s.pts.some(p => Math.hypot(p.x - pt.x, p.y - pt.y) < R)
+    );
+    if (strokesRef.current.length !== before) redraw();
   }
 
-  function onMove(e) {
-    if (!live.current) return;
-    live.current = [...live.current, getPoint(e)];
-    paintAll();
-  }
+  function onPointerDown(e) {
+    if (!drawMode) return;
+    const scrollEl = scrollElRef.current;
+    if (!scrollEl) return;
+    const rect = scrollEl.getBoundingClientRect();
 
-  function onUp() {
-    if (!live.current) return;
-    const pts = live.current;
-    if (pts.length > 1) {
-      strokes.current = [...strokes.current, pts];
-      if (drawing.current && typeof HandwritingStroke !== 'undefined') {
-        try { const s = new HandwritingStroke(); pts.forEach(p => s.addPoint({ x: p.x, y: p.y, t: p.t })); drawing.current.addStroke(s); } catch {}
-      }
+    // Rightmost 20 px is a dedicated scroll strip
+    if (e.clientX >= rect.right - 20) {
+      isScrollRef.current   = true;
+      lastScrollYRef.current = e.clientY;
+      canvasRef.current.setPointerCapture(e.pointerId);
+      return;
     }
-    live.current = null;
-    paintAll();
-    setStatus('idle');
-    if (strokes.current.length > 0) timer.current = setTimeout(recognize, 1500);
+
+    e.preventDefault();
+    canvasRef.current.setPointerCapture(e.pointerId);
+    isDrawingRef.current = true;
+    const pt = getPoint(e);
+    liveRef.current = { pts: [pt], erasing: eraser };
+    if (eraser) eraseAt(pt);
+    redraw();
   }
 
-  async function recognize() {
-    if (!drawing.current || !strokes.current.length) return;
-    setStatus('recognizing');
-    try {
-      const results = await drawing.current.getPrediction();
-      const text = results?.[0]?.text;
-      if (text) { onText(text); clearAll(); return; }
-    } catch (err) { console.warn('HW recognition:', err); }
-    setStatus('idle');
+  function onPointerMove(e) {
+    if (isScrollRef.current) {
+      const scrollEl = scrollElRef.current;
+      if (scrollEl) scrollEl.scrollTop += lastScrollYRef.current - e.clientY;
+      lastScrollYRef.current = e.clientY;
+      return;
+    }
+    if (!isDrawingRef.current || !liveRef.current) return;
+    e.preventDefault();
+    const pt = getPoint(e);
+    liveRef.current = { ...liveRef.current, pts: [...liveRef.current.pts, pt] };
+    if (eraser) eraseAt(pt);
+    redraw();
   }
 
-  function clearAll() {
-    strokes.current = []; live.current = null;
-    clearTimeout(timer.current);
-    resetDrawing(); paintAll(); setStatus('idle');
+  function onPointerUp() {
+    if (isScrollRef.current) { isScrollRef.current = false; return; }
+    if (!isDrawingRef.current) return;
+    isDrawingRef.current = false;
+
+    if (liveRef.current) {
+      if (!liveRef.current.erasing && liveRef.current.pts.length > 0) {
+        strokesRef.current = [...strokesRef.current, { pts: liveRef.current.pts }];
+      }
+      onStrokesChange([...strokesRef.current]);
+    }
+    liveRef.current = null;
+    redraw();
   }
 
-  const hasStrokes = strokes.current.length > 0 || status === 'drawing';
-  const hint = status === 'recognizing' ? 'Converting…'
-             : status === 'drawing'     ? 'Writing…'
-             : hasStrokes               ? 'Pause to auto-convert, or tap Convert'
-             :                           'Write on the lines below';
+  const cursor = !drawMode ? 'default' : eraser ? 'cell' : 'crosshair';
 
   return (
-    <div className="hw-panel">
-      <div className="hw-bar">
-        <span className="hw-hint">{hint}</span>
-        <div className="hw-btns">
-          {hasStrokes && <button className="hw-btn primary" onPointerDown={recognize}>Convert</button>}
-          <button className="hw-btn" onPointerDown={clearAll} disabled={!hasStrokes}>Clear</button>
-          <button className="hw-btn close-hw" onPointerDown={onClose}>✕</button>
-        </div>
-      </div>
-
-      {supported === false ? (
-        <div className="hw-unsupported">
-          <strong>Handwriting recognition not available</strong>
-          <p>Requires Chrome 99+ on Windows 10/11 or Android with the system handwriting service enabled.</p>
-        </div>
-      ) : (
-        <canvas
-          ref={canvasRef}
-          className="hw-canvas"
-          style={{ height: H }}
-          onPointerDown={onDown}
-          onPointerMove={onMove}
-          onPointerUp={onUp}
-          onPointerCancel={onUp}
-        />
-      )}
-    </div>
+    <canvas
+      ref={canvasRef}
+      className={`draw-canvas${drawMode ? ' active' : ''}`}
+      style={{ cursor }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+    />
   );
 }
 
@@ -426,6 +423,12 @@ function KeyboardIcon() {
     {[0,1,2,3].map(i => <rect key={i} x={2.5+i*4} y="2.5" width="2.5" height="2.5" rx="0.5"/>)}
     {[0,1,2,3].map(i => <rect key={i} x={2.5+i*4} y="7"   width="2.5" height="2.5" rx="0.5"/>)}
     <rect x="5" y="11" width="10" height="2" rx="1"/>
+  </svg>;
+}
+function EraserIcon() {
+  return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
+    <rect x="3" y="2" width="12" height="8" rx="1.5" opacity="0.85"/>
+    <rect x="0" y="11.5" width="18" height="2" rx="1"/>
   </svg>;
 }
 function AlignLeftIcon() {
