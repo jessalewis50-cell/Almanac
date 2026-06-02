@@ -171,21 +171,22 @@ export default function App() {
   }, [eid]);
 
   const convertDrawingToText = useCallback(async () => {
-    const strokes = activeNote?.strokes;
-    if (!strokes?.length || converting) return;
+    if (converting) return;
+
+    const strokes = activeNote?.strokes || [];
+    const penPts = strokes.filter(s => !s.erase).flatMap(s => s.pts);
+
+    if (!penPts.length) {
+      setConvertError('Nothing to convert — please write something first.');
+      return;
+    }
 
     setConverting(true);
     setConvertError(null);
 
-    const apiKey = process.env.REACT_APP_ANTHROPIC_API_KEY;
-    console.log(apiKey ? 'API key found' : 'API key missing');
-
     try {
       const canvas = drawingCanvasRef.current?.getCanvas();
       if (!canvas) throw new Error('no-canvas');
-
-      const penPts = strokes.filter(s => !s.erase).flatMap(s => s.pts);
-      if (!penPts.length) throw new Error('empty');
 
       const dpr   = window.devicePixelRatio || 1;
       const pad   = 24;
@@ -210,19 +211,18 @@ export default function App() {
       );
 
       const base64Data = tmp.toDataURL('image/png').split(',')[1];
+      console.log('Canvas captured');
 
       let response;
       try {
-        response = await fetch('https://api.anthropic.com/v1/messages', {
+        response = await fetch('/api/anthropic/v1/messages', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': apiKey || '',
-            'anthropic-version': '2023-06-01',
-            'anthropic-dangerous-direct-browser-calls': 'true',
+            'anthropic-dangerous-direct-browser-access': 'true',
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             max_tokens: 1024,
             system: 'You are a handwriting recognition assistant. The user will send you an image of handwritten notes on a canvas. Your job is to transcribe the handwriting as accurately as possible into plain text. Preserve the structure of the writing — if there are bullet points transcribe them as bullet points, if there are numbered lists transcribe them as numbered lists, if there are multiple lines keep them as separate lines, if there are indentations preserve them. Return only the transcribed text with no explanation or commentary.',
             messages: [{
@@ -247,40 +247,43 @@ export default function App() {
       }
 
       const data    = await response.json();
+      console.log('API response received', data);
       const rawText = data.content?.[0]?.text;
+      console.log('Extracted text:', rawText);
       if (!rawText?.trim()) throw new Error('empty');
 
       const html = formatRecognizedText(rawText);
-      const avgY = penPts.reduce((sum, p) => sum + p.y, 0) / penPts.length;
 
+      // Switch to typing mode so the editor is interactive
       setDrawMode(false);
       setEraserActive(false);
       await new Promise(r => requestAnimationFrame(r));
 
+      const editor  = editorRef.current;
       const scrollEl = editorScrollRef.current;
-      const editor   = editorRef.current;
-      if (editor && scrollEl) {
-        editor.focus();
-        const scrollRect = scrollEl.getBoundingClientRect();
-        const viewportX  = scrollRect.left + scrollRect.width / 2;
-        const viewportY  = Math.max(
-          scrollRect.top    + 20,
-          Math.min(scrollRect.bottom - 20, avgY - scrollEl.scrollTop + scrollRect.top)
-        );
-        const range = caretFromPoint(viewportX, viewportY);
-        const sel   = window.getSelection();
-        if (range && sel) {
-          sel.removeAllRanges();
-          sel.addRange(range);
-        } else if (sel) {
-          sel.selectAllChildren(editor);
-          sel.collapseToEnd();
-        }
-        document.execCommand('insertHTML', false, html);
+      if (!editor) {
+        console.warn('Editor not found — text not inserted');
+      } else {
+        console.log('Inserting text into document');
+
+        // Append directly to innerHTML — no selection/execCommand needed
+        const existing   = editor.innerHTML || '';
+        const separator  = existing ? '<p><br></p>' : '';
+        const newContent = existing + separator + html;
+        editor.innerHTML = newContent;
+
+        // Sync the new innerHTML back into React state
         onEditorInput();
+
+        // Scroll to the bottom so the inserted text is visible
+        if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+
+        console.log('Document content after insertion:', editor.innerText.slice(0, 50));
+        console.log('Conversion complete');
       }
 
       updateStrokes([]);
+      drawingCanvasRef.current?.clearCanvas();
     } catch (err) {
       console.warn('Convert:', err);
       setConvertError('Could not convert handwriting — please try again.');
@@ -362,7 +365,17 @@ export default function App() {
           <div className="toolbar-group">
             <button
               className={tbtn(drawMode)}
-              onPointerDown={() => { setDrawMode(m => !m); setEraserActive(false); }}
+              onPointerDown={() => {
+                setDrawMode(m => {
+                  if (m) {
+                    // switching back to typing — clear any remaining ink
+                    drawingCanvasRef.current?.clearCanvas();
+                    updateStrokes([]);
+                  }
+                  return !m;
+                });
+                setEraserActive(false);
+              }}
               title={drawMode ? 'Switch to typing' : 'Switch to drawing'}
             >
               {drawMode ? <KeyboardIcon /> : <PenIcon />}
@@ -443,6 +456,10 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
 
   useImperativeHandle(ref, () => ({
     getCanvas: () => canvasRef.current,
+    clearCanvas: () => {
+      strokesRef.current = [];
+      redraw();
+    },
   }));
 
   useEffect(() => {
