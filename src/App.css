@@ -185,19 +185,56 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
   min-height: 100%;
 }
 
-.editor {
-  padding: 28px 32px 28px; outline: none;
-  font-size: 16px; line-height: 1.75; color: #1e293b;
-  word-wrap: break-word; min-height: 100%;
-  caret-color: #2563eb;
-}
-.editor:empty::before { content: attr(data-placeholder); color: #94a3b8; pointer-events: none; }
+/* ── Quill editor ────────────────────────────────────────── */
 
-.editor.draw-mode {
+/* Quill wrapper and container: no border, height tracks content */
+.editor-scroll .quill           { width: 100%; }
+.editor-scroll .ql-container    { border: none !important; height: auto !important; }
+.editor-scroll .ql-toolbar      { display: none; }  /* we use our own toolbar */
+
+/* ql-editor: matches the old .editor appearance */
+.editor-scroll .ql-editor {
+  padding: 28px 32px !important;
+  font-size: 16px; line-height: 1.75; color: #1e293b;
+  min-height: calc(100vh - 180px);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  caret-color: #2563eb;
+  /* let the outer .editor-scroll handle scrolling */
+  overflow-y: visible !important;
+  height: auto !important;
+}
+
+/* Placeholder */
+.editor-scroll .ql-editor.ql-blank::before {
+  color: #94a3b8;
+  font-style: normal;
+  left: 32px;
+  right: 32px;
+}
+
+/* Draw mode: block pointer events on the Quill editor */
+.quill-editor.draw-mode .ql-editor {
   pointer-events: none;
   user-select: none;
   caret-color: transparent;
 }
+
+/* Touch refinements for Quill */
+@media (pointer: coarse) {
+  .editor-scroll .ql-editor { font-size: 18px !important; padding: 20px 18px !important; }
+}
+
+/* ── Bullet list indent styles (matches Word) ────────────── */
+/* Quill 2.x stores the marker in .ql-ui:before inside li[data-list=bullet] */
+
+.ql-editor li[data-list=bullet].ql-indent-1 > .ql-ui:before { content: '\25E6'; } /* ◦ hollow circle */
+.ql-editor li[data-list=bullet].ql-indent-2 > .ql-ui:before { content: '\25AA'; } /* ▪ filled square */
+.ql-editor li[data-list=bullet].ql-indent-3 > .ql-ui:before,
+.ql-editor li[data-list=bullet].ql-indent-4 > .ql-ui:before,
+.ql-editor li[data-list=bullet].ql-indent-5 > .ql-ui:before,
+.ql-editor li[data-list=bullet].ql-indent-6 > .ql-ui:before,
+.ql-editor li[data-list=bullet].ql-indent-7 > .ql-ui:before,
+.ql-editor li[data-list=bullet].ql-indent-8 > .ql-ui:before { content: '\25AB'; } /* ▫ hollow square */
 
 /* ── Drawing canvas ──────────────────────────────────────── */
 
@@ -302,52 +339,34 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
 
 .sb-folder-notes { padding-left: 4px; }
 
-/* ── Auth screen ─────────────────────────────────────────── */
+/* ── Auth screen (legacy — kept for fallback) ────────────── */
 
 .auth-screen {
   display: flex; align-items: center; justify-content: center;
-  min-height: 100vh;
-  background: #f1f5f9;
+  min-height: 100vh; background: #f1f5f9;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
-
 .auth-card {
   background: #fff; border-radius: 14px; padding: 40px 36px;
   width: 320px; max-width: calc(100vw - 40px);
   box-shadow: 0 4px 32px rgba(0,0,0,0.10);
   display: flex; flex-direction: column; gap: 20px;
 }
-
-.auth-title {
-  font-size: 28px; font-weight: 700; text-align: center;
-  margin: 0; color: #1e293b; letter-spacing: -0.5px;
-}
-
+.auth-title { font-size: 28px; font-weight: 700; text-align: center; margin: 0; color: #1e293b; }
 .auth-fields { display: flex; flex-direction: column; gap: 10px; }
-
 .auth-input {
   padding: 11px 14px; border: 1px solid #e2e8f0; border-radius: 8px;
-  font-size: 15px; outline: none; transition: border-color 0.15s;
-  color: #1e293b; width: 100%;
+  font-size: 15px; outline: none; transition: border-color 0.15s; color: #1e293b; width: 100%;
 }
 .auth-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px #bfdbfe55; }
-
-.auth-error {
-  font-size: 13px; color: #dc2626; text-align: center;
-  background: #fef2f2; border-radius: 6px; padding: 8px 12px;
-}
-
+.auth-error { font-size: 13px; color: #dc2626; text-align: center; background: #fef2f2; border-radius: 6px; padding: 8px 12px; }
 .auth-buttons { display: flex; gap: 10px; }
-
 .auth-btn {
   flex: 1; padding: 11px; border-radius: 8px; border: 1px solid #e2e8f0;
-  background: #fff; font-size: 15px; cursor: pointer;
-  transition: background 0.15s; color: #374151; font-weight: 500;
+  background: #fff; font-size: 15px; cursor: pointer; transition: background 0.15s; color: #374151; font-weight: 500;
 }
 .auth-btn:hover:not(:disabled) { background: #f8fafc; }
-.auth-btn.primary {
-  background: #1e293b; color: #fff; border-color: #1e293b;
-}
+.auth-btn.primary { background: #1e293b; color: #fff; border-color: #1e293b; }
 .auth-btn.primary:hover:not(:disabled) { background: #334155; }
 .auth-btn:disabled { opacity: 0.55; cursor: default; }
 
@@ -357,12 +376,10 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
   display: flex; align-items: center; gap: 6px;
   flex-shrink: 0; margin-left: 4px;
 }
-
 .user-email {
   font-size: 12px; color: rgba(248,250,252,0.55);
   max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-
 .signout-btn { font-size: 12px; min-width: unset; padding: 0 10px; color: #f8fafc; }
 
 /* ── Auth guest button ───────────────────────────────────── */
@@ -375,3 +392,230 @@ html, body, #root { height: 100%; margin: 0; overflow: hidden; }
 }
 .auth-guest-btn:hover:not(:disabled) { background: #f8fafc; color: #475569; }
 .auth-guest-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ── App root wrapper ────────────────────────────────────── */
+
+.app-root { position: relative; height: 100%; overflow: hidden; }
+
+/* ── Notebook scene — warm wooden desk surface ───────────── */
+
+.notebook-scene {
+  position: fixed; inset: 0; z-index: 500;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse 90% 70% at 50% 45%, #2a1508 0%, #190d06 50%, #0d0703 100%);
+}
+
+/* Vignette — darker edges pull focus to the notebook */
+.notebook-scene::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background: radial-gradient(ellipse at center, transparent 22%, rgba(0,0,0,0.58) 100%);
+}
+
+/* The notebook — fills the full viewport */
+.notebook-wrap {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1;
+}
+
+/* ── Page stack — cream sheets peeking past the cover edge ── */
+
+.nb-page {
+  position: absolute; top: 5px; bottom: 5px; left: 54px;
+  border-radius: 0 3px 3px 0;
+  box-shadow: 1px 0 3px rgba(0,0,0,0.18);
+}
+.nb-page-a { right: -6px; background: #ece7df; }
+.nb-page-b { right: -4px; background: #f0ebe4; }
+.nb-page-c { right: -2px; background: #f4eee8; }
+
+/* ── Fixed spine — the hinge, never moves ────────────────── */
+
+.nb-spine {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 54px;
+  background: #2A1A0E;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: space-evenly; padding: 2vh 0;
+  z-index: 10; overflow: visible; border-radius: 4px 0 0 4px;
+  box-shadow: 2px 0 10px rgba(0,0,0,0.6), inset -3px 0 8px rgba(0,0,0,0.35);
+}
+
+/* ── Realistic 3D coil rings ─────────────────────────────── */
+
+.nb-ring {
+  width: 28px; height: 18px; border-radius: 50%;
+  position: relative; flex-shrink: 0;
+  transform: translateX(14px);
+  background: linear-gradient(180deg,
+    #f0f0f0  0%,
+    #d8d8d8 18%,
+    #c0c0c0 35%,
+    #888888 50%,
+    #707070 62%,
+    #909090 76%,
+    #b8b8b8 100%);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.75), 0 1px 3px rgba(0,0,0,0.5);
+  border: 0.5px solid rgba(0,0,0,0.25);
+}
+.nb-ring::before {
+  content: ''; position: absolute; left: 12%; right: 12%;
+  top: calc(50% - 1px); height: 2px;
+  background: rgba(5,0,0,0.82); border-radius: 1px; z-index: 1;
+}
+.nb-ring::after {
+  content: ''; position: absolute; left: 8%; right: 8%; top: 6%; height: 38%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.8) 0%, rgba(255,255,255,0.1) 80%, transparent 100%);
+  border-radius: 50% 50% 0 0; z-index: 2;
+}
+
+/* ── Perspective container ───────────────────────────────── */
+
+.nb-perspective {
+  position: absolute; inset: 0;
+  perspective: 1200px;
+  perspective-origin: 20% 50%;
+}
+
+/* ── Animated cover wrapper (Framer Motion) ──────────────── */
+
+.nb-cover-3d { position: absolute; inset: 0; }
+
+/* Inside cover — warm tan lining, visible after 90deg swing */
+.nb-cover-inside {
+  position: absolute; inset: 0;
+  background: linear-gradient(155deg, #d4a56e 0%, #C4956A 40%, #b07a4e 75%, #9a6640 100%);
+  backface-visibility: hidden; -webkit-backface-visibility: hidden;
+  transform: rotateY(180deg); border-radius: 0;
+}
+
+/* Outside cover — warm brown leather, front face */
+.nb-cover {
+  position: absolute; inset: 0;
+  font-family: Georgia, 'Times New Roman', serif; overflow: hidden;
+  backface-visibility: hidden; -webkit-backface-visibility: hidden;
+  background-color: #6B3F2A;
+  background-image:
+    radial-gradient(ellipse 58% 65% at 74% 58%, rgba(45,18,8,0.65) 0%, transparent 100%),
+    radial-gradient(ellipse 38% 42% at 24% 22%, rgba(139,94,60,0.4) 0%, transparent 100%),
+    repeating-linear-gradient(0deg, transparent, transparent 27px, rgba(0,0,0,0.05) 27px, rgba(0,0,0,0.05) 28px);
+  border-radius: 0;
+}
+.nb-cover::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+  opacity: 0.05; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-repeat: repeat; background-size: 200px 200px;
+}
+.nb-cover::after {
+  content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 16px;
+  background: linear-gradient(to left, rgba(0,0,0,0.35), transparent);
+  pointer-events: none; z-index: 2;
+}
+
+/* ── Cover body ──────────────────────────────────────────── */
+
+.nb-body {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 24px; padding: 40px 48px 40px 74px; z-index: 1;
+}
+
+/* ── Bookmark ribbon ─────────────────────────────────────── */
+
+.nb-bookmark {
+  position: absolute; top: -2px; right: 60px;
+  width: 20px; height: 60px;
+  background: linear-gradient(to bottom, #8b0000, #6b0000);
+  clip-path: polygon(0 0, 100% 0, 100% 82%, 50% 100%, 0 82%);
+  box-shadow: 2px 2px 6px rgba(0,0,0,0.5);
+}
+
+/* ── Title ───────────────────────────────────────────────── */
+
+.nb-title-wrap { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+.nb-title-label {
+  display: inline-block;
+  border: 1.5px solid rgba(240,215,175,0.22); border-radius: 3px;
+  padding: 14px 40px; background: rgba(0,0,0,0.2);
+  box-shadow: 0 0 0 5px rgba(240,215,175,0.04),
+    inset 0 1px 0 rgba(255,255,255,0.07), inset 0 -1px 0 rgba(0,0,0,0.2);
+}
+
+.nb-title {
+  margin: 0; font-size: clamp(1.7rem, 4.5vw, 2.6rem); font-weight: 700;
+  color: #f0d8b0; letter-spacing: 10px; text-transform: uppercase;
+  text-shadow: 0 1px 0 rgba(0,0,0,0.7), 0 -1px 0 rgba(255,255,255,0.06),
+    0 0 40px rgba(240,215,175,0.14);
+}
+
+.nb-subtitle {
+  margin: 0; font-size: 0.78rem; font-style: italic;
+  color: rgba(240,215,175,0.35); letter-spacing: 2px;
+}
+
+/* ── Form ────────────────────────────────────────────────── */
+
+.nb-form { width: 100%; max-width: 300px; display: flex; flex-direction: column; gap: 10px; }
+
+.nb-input {
+  width: 100%; padding: 10px 13px; background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(240,215,175,0.18); border-radius: 4px;
+  color: #f0d8b0; font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  outline: none; transition: border-color 0.15s, background 0.15s; box-sizing: border-box;
+}
+.nb-input::placeholder { color: rgba(240,215,175,0.3); }
+.nb-input:focus { border-color: rgba(240,215,175,0.5); background: rgba(0,0,0,0.38); }
+
+.nb-error {
+  font-size: 12px; color: #ffb8a0; background: rgba(200,60,40,0.22);
+  border: 1px solid rgba(200,60,40,0.35); border-radius: 4px;
+  padding: 7px 11px; text-align: center;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.nb-btn-row { display: flex; gap: 9px; }
+
+.nb-btn-primary {
+  flex: 1; padding: 10px; background: #f0d8b0; color: #3a1e0a;
+  border: none; border-radius: 4px; font-size: 14px; font-weight: 700;
+  font-family: Georgia, serif; cursor: pointer; letter-spacing: 0.5px;
+  transition: background 0.15s, transform 0.1s; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+}
+.nb-btn-primary:hover:not(:disabled) { background: #fffae8; }
+.nb-btn-primary:active:not(:disabled) { transform: scale(0.98); }
+.nb-btn-primary:disabled { opacity: 0.5; cursor: default; }
+
+.nb-btn-secondary {
+  flex: 1; padding: 10px; background: transparent; color: #f0d8b0;
+  border: 1px solid rgba(240,215,175,0.32); border-radius: 4px;
+  font-size: 14px; font-family: Georgia, serif; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.nb-btn-secondary:hover:not(:disabled) { background: rgba(240,215,175,0.1); border-color: rgba(240,215,175,0.52); }
+.nb-btn-secondary:disabled { opacity: 0.5; cursor: default; }
+
+.nb-divider { height: 1px; background: rgba(240,215,175,0.13); margin: 1px 0; }
+
+.nb-btn-ghost {
+  width: 100%; padding: 9px; background: transparent;
+  color: rgba(240,215,175,0.4); border: none; font-size: 13px;
+  font-family: Georgia, serif; font-style: italic; cursor: pointer;
+  letter-spacing: 0.3px; transition: color 0.15s;
+}
+.nb-btn-ghost:hover:not(:disabled) { color: rgba(240,215,175,0.7); }
+.nb-btn-ghost:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Mobile adjustments ──────────────────────────────────── */
+
+@media (max-width: 480px) {
+  .nb-spine { width: 38px; border-radius: 2px 0 0 2px; }
+  .nb-ring { width: 22px; height: 14px; transform: translateX(10px); }
+  .nb-page { left: 38px; }
+  .nb-body { padding: 26px 18px 26px 52px; gap: 18px; }
+  .nb-title-label { padding: 10px 20px; }
+  .nb-bookmark { right: 36px; }
+  .nb-perspective { perspective: 900px; }
+}

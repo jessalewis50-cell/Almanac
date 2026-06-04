@@ -1,11 +1,21 @@
 import React, { useState, useRef, useCallback, useEffect, useImperativeHandle } from 'react';
 import './App.css';
 import { supabase } from './supabaseClient';
+import { motion, useAnimation } from 'framer-motion';
+import ReactQuill from 'react-quill-new';
+import 'react-quill-new/dist/quill.snow.css';
+import Quill from 'quill';
+
+// Use inline-style attributors so font/size are stored as style='...' not class=''
+const FontStyle = Quill.import('attributors/style/font');
+const SizeStyle = Quill.import('attributors/style/size');
+Quill.register(FontStyle, true);
+Quill.register(SizeStyle, true);
 
 const FONT_FAMILIES = ['Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Comic Sans MS'];
 const FONT_SIZES = [
-  { label: '10pt', value: '1' }, { label: '13pt', value: '2' }, { label: '16pt', value: '3' },
-  { label: '18pt', value: '4' }, { label: '24pt', value: '5' }, { label: '32pt', value: '6' }, { label: '48pt', value: '7' },
+  { label: '10pt', value: '10px' }, { label: '13pt', value: '13px' }, { label: '16pt', value: '16px' },
+  { label: '18pt', value: '18px' }, { label: '24pt', value: '24px' }, { label: '32pt', value: '32px' }, { label: '48pt', value: '48px' },
 ];
 
 function makeNote(folderId = null) {
@@ -72,43 +82,111 @@ function formatRecognizedText(raw) {
   }).join('');
 }
 
-// ── Auth Screen ─────────────────────────────────────────────────────────────────
+// ── Notebook Cover (Framer Motion) ─────────────────────────────────────────────
 
-function AuthScreen({ onSignIn, onSignUp, onGuest, error, loading }) {
+function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const coverControls = useAnimation();
+  const sceneControls = useAnimation();
+  const rings = Array.from({ length: 22 }, (_, i) => i);
+
+  useEffect(() => {
+    if (!opening) return;
+    (async () => {
+      // Phase 1 — Lift: cover rises off the desk (0–500ms)
+      await coverControls.start({
+        z: 22,
+        scale: 1.02,
+        boxShadow: '0 22px 65px rgba(0,0,0,0.72), 0 10px 32px rgba(0,0,0,0.5)',
+        transition: { duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] },
+      });
+      // Phase 2 — Swing cover + fade entire scene simultaneously (500–2200ms)
+      // Cover swings; binding, pages, and background all fade out in lockstep
+      coverControls.start({
+        rotateY: -180,
+        z: 0,
+        scale: 1,
+        boxShadow: '0 2px 8px rgba(0,0,0,0.15), 0 1px 3px rgba(0,0,0,0.1)',
+        transition: { duration: 1.7, ease: [0.645, 0.045, 0.355, 1.000] },
+      });
+      await sceneControls.start({
+        opacity: 0,
+        transition: { duration: 1.7, ease: 'easeIn' },
+      });
+    })();
+  }, [opening]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
-    <div className="auth-screen">
-      <div className="auth-card">
-        <h1 className="auth-title">Notes</h1>
-        <div className="auth-fields">
-          <input
-            className="auth-input" type="email" placeholder="Email"
-            value={email} onChange={e => setEmail(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && onSignIn(email, password)}
-            autoComplete="email"
-          />
-          <input
-            className="auth-input" type="password" placeholder="Password"
-            value={password} onChange={e => setPassword(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && onSignIn(email, password)}
-            autoComplete="current-password"
-          />
+    <motion.div className="notebook-scene" animate={sceneControls} initial={{ opacity: 1 }}>
+      <div className="notebook-wrap">
+        {/* Page stack — cream pages peeking past the cover's right edge */}
+        <div className="nb-page nb-page-a" />
+        <div className="nb-page nb-page-b" />
+        <div className="nb-page nb-page-c" />
+
+        {/* Fixed spine — the hinge point, never moves */}
+        <div className="nb-spine">
+          {rings.map(i => <div key={i} className="nb-ring" />)}
         </div>
-        {error && <div className="auth-error">{error}</div>}
-        <div className="auth-buttons">
-          <button className="auth-btn primary" onClick={() => onSignIn(email, password)} disabled={loading}>
-            {loading ? 'Please wait…' : 'Sign In'}
-          </button>
-          <button className="auth-btn" onClick={() => onSignUp(email, password)} disabled={loading}>
-            Sign Up
-          </button>
+
+        {/* Perspective container for 3D cover */}
+        <div className="nb-perspective">
+          <motion.div
+            className="nb-cover-3d"
+            animate={coverControls}
+            initial={{
+              rotateY: 0, scale: 1, z: 0, opacity: 1,
+              boxShadow: '0 10px 40px rgba(0,0,0,0.6), 0 4px 14px rgba(0,0,0,0.38)',
+            }}
+            style={{ originX: 0, originY: '50%', transformStyle: 'preserve-3d' }}
+          >
+            {/* Back face — warm tan inside lining, visible after 90deg swing */}
+            <div className="nb-cover-inside" />
+
+            {/* Front face — warm brown leather cover */}
+            <div className="nb-cover">
+              <div className="nb-body">
+                <div className="nb-bookmark" />
+                <div className="nb-title-wrap">
+                  <div className="nb-title-label">
+                    <h1 className="nb-title">Notes</h1>
+                  </div>
+                  <p className="nb-subtitle">keep your thoughts.</p>
+                </div>
+                <div className="nb-form">
+                  <input
+                    className="nb-input" type="email" placeholder="Email"
+                    value={email} onChange={e => setEmail(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && onSignIn(email, password)}
+                    autoComplete="email"
+                  />
+                  <input
+                    className="nb-input" type="password" placeholder="Password"
+                    value={password} onChange={e => setPassword(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && onSignIn(email, password)}
+                    autoComplete="current-password"
+                  />
+                  {error && <div className="nb-error">{error}</div>}
+                  <div className="nb-btn-row">
+                    <button className="nb-btn-primary" onClick={() => onSignIn(email, password)} disabled={loading}>
+                      {loading ? 'Please wait…' : 'Sign In'}
+                    </button>
+                    <button className="nb-btn-secondary" onClick={() => onSignUp(email, password)} disabled={loading}>
+                      Sign Up
+                    </button>
+                  </div>
+                  <div className="nb-divider" />
+                  <button className="nb-btn-ghost" onClick={onGuest} disabled={loading}>
+                    Continue as Guest
+                  </button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
         </div>
-        <button className="auth-guest-btn" onClick={onGuest} disabled={loading}>
-          Continue as Guest
-        </button>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -116,18 +194,20 @@ function AuthScreen({ onSignIn, onSignUp, onGuest, error, loading }) {
 
 export default function App() {
   // Auth
-  const [session, setSession]       = useState(null);
-  const [isGuest, setIsGuest]       = useState(false);
-  const [authError, setAuthError]   = useState(null);
+  const [session, setSession]         = useState(null);
+  const [isGuest, setIsGuest]         = useState(false);
+  const [showApp, setShowApp]         = useState(false);
+  const [openingBook, setOpeningBook] = useState(false);
+  const [authError, setAuthError]     = useState(null);
   const [authLoading, setAuthLoading] = useState(false);
 
   // Notes & folders
-  const [notes, setNotes]                       = useState([makeNote()]);
-  const [activeId, setActiveId]                 = useState(null);
-  const [folders, setFolders]                   = useState([]);
+  const [notes, setNotes]                         = useState([makeNote()]);
+  const [activeId, setActiveId]                   = useState(null);
+  const [folders, setFolders]                     = useState([]);
   const [expandedFolderIds, setExpandedFolderIds] = useState(new Set());
-  const [activeFolderId, setActiveFolderId]     = useState(null);
-  const [renamingFolderId, setRenamingFolderId] = useState(null);
+  const [activeFolderId, setActiveFolderId]       = useState(null);
+  const [renamingFolderId, setRenamingFolderId]   = useState(null);
 
   // UI
   const [sidebarOpen, setSidebarOpen]   = useState(false);
@@ -135,15 +215,15 @@ export default function App() {
   const [eraserActive, setEraserActive] = useState(false);
   const [converting, setConverting]     = useState(false);
   const [convertError, setConvertError] = useState(null);
-  const [saveStatus, setSaveStatus]     = useState('idle'); // 'idle'|'saving'|'saved'|'error'
+  const [saveStatus, setSaveStatus]     = useState('idle');
   const [formats, setFormats]           = useState({});
   const [color, setColor]               = useState('#000000');
 
   // Refs
-  const editorRef        = useRef(null);
+  const quillRef         = useRef(null);   // ReactQuill component ref
   const editorScrollRef  = useRef(null);
   const drawingCanvasRef = useRef(null);
-  const savedRangeRef    = useRef(null);
+  const savedQuillRange  = useRef(null);   // last Quill selection before toolbar focus
   const notesRef         = useRef(notes);
   const sessionRef       = useRef(session);
   const autosaveTimerRef = useRef(null);
@@ -159,10 +239,17 @@ export default function App() {
   // ── Auth init ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) setIsGuest(false);
+    // Existing session on page load → show app immediately, no animation
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) { setSession(session); setShowApp(true); }
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, newSession) => {
+      if (!newSession) {
+        // Sign-out: reset everything and show cover
+        setSession(null); setIsGuest(false); setShowApp(false); setOpeningBook(false);
+      } else if (event === 'TOKEN_REFRESHED') {
+        setSession(newSession);
+      }
     });
     return () => {
       subscription.unsubscribe();
@@ -172,20 +259,13 @@ export default function App() {
 
   // Load from Supabase on login; reset on logout
   useEffect(() => {
-    if (session) {
-      loadAll();
-    } else if (!isGuest) {
-      setNotes([makeNote()]); setActiveId(null); setFolders([]);
-    }
+    if (session) loadAll();
+    else if (!isGuest) { setNotes([makeNote()]); setActiveId(null); setFolders([]); }
   }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Guest: persist notes to localStorage
-  useEffect(() => {
-    if (isGuest) localStorage.setItem('notes-v2', JSON.stringify(notes));
-  }, [notes, isGuest]);
-  useEffect(() => {
-    if (isGuest && eid) localStorage.setItem('notes-active', JSON.stringify(eid));
-  }, [eid, isGuest]);
+  useEffect(() => { if (isGuest) localStorage.setItem('notes-v2', JSON.stringify(notes)); }, [notes, isGuest]);
+  useEffect(() => { if (isGuest && eid) localStorage.setItem('notes-active', JSON.stringify(eid)); }, [eid, isGuest]);
 
   // Autosave on note switch + sync editor content
   useEffect(() => {
@@ -194,7 +274,11 @@ export default function App() {
       doAutosave(prevEidRef.current);
     }
     prevEidRef.current = eid;
-    if (editorRef.current) editorRef.current.innerHTML = activeNote?.content || '';
+    const quillInst = quillRef.current?.getEditor();
+    if (quillInst) {
+      quillInst.clipboard.dangerouslyPasteHTML(activeNote?.content || '');
+      quillInst.setSelection(0, 0, 'silent');
+    }
   }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -250,9 +334,7 @@ export default function App() {
       }
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 2000);
-    } catch {
-      setSaveStatus('error');
-    }
+    } catch { setSaveStatus('error'); }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function scheduleAutosave(noteId) {
@@ -265,41 +347,57 @@ export default function App() {
 
   async function handleSignIn(email, password) {
     setAuthLoading(true); setAuthError(null);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) setAuthError(error.message);
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) { setAuthError(error.message); setAuthLoading(false); return; }
     setAuthLoading(false);
+    setSession(data.session);
+    setOpeningBook(true);
+    setTimeout(() => { setShowApp(true); }, 1900);    // app fades in 300ms before scene finishes
+    setTimeout(() => { setOpeningBook(false); }, 2300); // unmount cover after animation ends
   }
 
   async function handleSignUp(email, password) {
     setAuthLoading(true); setAuthError(null);
-    const { error } = await supabase.auth.signUp({ email, password });
-    if (error) setAuthError(error.message);
-    else setAuthError('Check your email to confirm your account.');
-    setAuthLoading(false);
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    if (error) { setAuthError(error.message); setAuthLoading(false); return; }
+    if (data?.session) {
+      setAuthLoading(false);
+      setSession(data.session);
+      setOpeningBook(true);
+      setTimeout(() => { setShowApp(true); }, 1900);
+      setTimeout(() => { setOpeningBook(false); }, 2300);
+    } else {
+      setAuthError('Check your email to confirm your account.');
+      setAuthLoading(false);
+    }
   }
 
   async function handleSignOut() {
     await supabase.auth.signOut();
-    if (editorRef.current) editorRef.current.innerHTML = '';
+    const q = quillRef.current?.getEditor();
+    if (q) q.setText('', 'api');
     setDrawMode(false); setEraserActive(false);
     setFolders([]); setActiveFolderId(null); setExpandedFolderIds(new Set());
   }
 
   function handleGuestMode() {
+    let guestNotes, guestActiveId;
     try {
       const saved = JSON.parse(localStorage.getItem('notes-v2'));
       if (Array.isArray(saved) && saved.length) {
-        setNotes(saved.map(n => ({ ...n, strokes: n.strokes || [] })));
-        const storedActive = JSON.parse(localStorage.getItem('notes-active'));
-        if (storedActive && saved.find(n => n.id === storedActive)) setActiveId(storedActive);
-        else setActiveId(saved[0].id);
-        setIsGuest(true); return;
+        guestNotes = saved.map(n => ({ ...n, strokes: n.strokes || [] }));
+        const stored = JSON.parse(localStorage.getItem('notes-active'));
+        guestActiveId = (stored && saved.find(n => n.id === stored)) ? stored : saved[0].id;
       }
     } catch {}
-    const n = makeNote(); setNotes([n]); setActiveId(n.id); setIsGuest(true);
+    if (!guestNotes) { const n = makeNote(); guestNotes = [n]; guestActiveId = n.id; }
+    setNotes(guestNotes); setActiveId(guestActiveId); setIsGuest(true);
+    setOpeningBook(true);
+    setTimeout(() => { setShowApp(true); }, 1900);
+    setTimeout(() => { setOpeningBook(false); }, 2300);
   }
 
-  function handleGuestSignIn() { setIsGuest(false); }
+  function handleGuestSignIn() { setIsGuest(false); setShowApp(false); }
 
   // ── Folder CRUD ────────────────────────────────────────────────────────────
 
@@ -373,50 +471,85 @@ export default function App() {
   }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onEditorInput = useCallback(() => {
-    if (!editorRef.current) return;
-    const content = editorRef.current.innerHTML;
+    const quill = quillRef.current?.getEditor();
+    if (!quill) return;
+    const content = quill.root.innerHTML;
     setNotes(p => p.map(n => n.id === eid ? { ...n, content, updatedAt: new Date().toISOString() } : n));
     scheduleAutosave(eid);
   }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Editor / format handlers ───────────────────────────────────────────────
 
-  const saveRange = useCallback(() => {
-    const sel = window.getSelection();
-    if (sel?.rangeCount > 0 && editorRef.current?.contains(sel.anchorNode))
-      savedRangeRef.current = sel.getRangeAt(0).cloneRange();
+  // Save Quill selection before a toolbar control steals focus
+  const saveQuillRange = useCallback(() => {
+    const quill = quillRef.current?.getEditor();
+    if (quill) savedQuillRange.current = quill.getSelection();
   }, []);
 
-  const restoreRange = useCallback(() => {
-    if (savedRangeRef.current) { const s = window.getSelection(); s.removeAllRanges(); s.addRange(savedRangeRef.current); }
-    editorRef.current?.focus();
+  // Restore saved Quill selection so format commands hit the right text
+  const restoreQuillRange = useCallback(() => {
+    const quill = quillRef.current?.getEditor();
+    if (!quill) return;
+    quill.focus();
+    if (savedQuillRange.current) {
+      quill.setSelection(savedQuillRange.current.index, savedQuillRange.current.length, 'silent');
+    }
   }, []);
 
   const refreshFormats = useCallback(() => {
-    try {
-      setFormats({
-        bold: document.queryCommandState('bold'), italic: document.queryCommandState('italic'),
-        underline: document.queryCommandState('underline'), strikeThrough: document.queryCommandState('strikeThrough'),
-        justifyLeft: document.queryCommandState('justifyLeft'), justifyCenter: document.queryCommandState('justifyCenter'),
-        justifyRight: document.queryCommandState('justifyRight'),
-        insertUnorderedList: document.queryCommandState('insertUnorderedList'),
-        insertOrderedList: document.queryCommandState('insertOrderedList'),
-      });
-    } catch {}
+    const quill = quillRef.current?.getEditor();
+    if (!quill) { setFormats({}); return; }
+    const f = quill.getFormat();
+    setFormats({
+      bold:                !!f.bold,
+      italic:              !!f.italic,
+      underline:           !!f.underline,
+      justifyLeft:         !f.align,
+      justifyCenter:       f.align === 'center',
+      justifyRight:        f.align === 'right',
+      insertUnorderedList: f.list === 'bullet',
+      insertOrderedList:   f.list === 'ordered',
+    });
   }, []);
 
-  useEffect(() => {
-    const h = () => { if (document.activeElement === editorRef.current) { saveRange(); refreshFormats(); } };
-    document.addEventListener('selectionchange', h);
-    return () => document.removeEventListener('selectionchange', h);
-  }, [saveRange, refreshFormats]);
+  const execBtn = useCallback((e, cmd) => {
+    e.preventDefault();
+    restoreQuillRange();
+    const quill = quillRef.current?.getEditor();
+    if (!quill) return;
+    const f = quill.getFormat();
+    switch (cmd) {
+      case 'bold':                quill.format('bold',      !f.bold);                              break;
+      case 'italic':              quill.format('italic',    !f.italic);                            break;
+      case 'underline':           quill.format('underline', !f.underline);                         break;
+      case 'justifyLeft':         quill.format('align',     false);                                break;
+      case 'justifyCenter':       quill.format('align',     'center');                             break;
+      case 'justifyRight':        quill.format('align',     'right');                              break;
+      case 'insertUnorderedList': quill.format('list', f.list === 'bullet'  ? false : 'bullet');   break;
+      case 'insertOrderedList':   quill.format('list', f.list === 'ordered' ? false : 'ordered');  break;
+      case 'indent':              quill.format('indent', '+1');                                    break;
+      case 'outdent':             quill.format('indent', '-1');                                    break;
+      default: break;
+    }
+    refreshFormats();
+  }, [refreshFormats, restoreQuillRange]);
 
-  const execBtn    = useCallback((e, cmd, val = null) => {
-    e.preventDefault(); document.execCommand(cmd, false, val); editorRef.current?.focus(); refreshFormats();
-  }, [refreshFormats]);
-  const applyFont  = useCallback((e) => { restoreRange(); document.execCommand('fontName', false, e.target.value); editorRef.current?.focus(); }, [restoreRange]);
-  const applySize  = useCallback((e) => { restoreRange(); document.execCommand('fontSize', false, e.target.value); editorRef.current?.focus(); }, [restoreRange]);
-  const applyColor = useCallback((e) => { const c = e.target.value; setColor(c); restoreRange(); document.execCommand('foreColor', false, c); editorRef.current?.focus(); }, [restoreRange]);
+  const applyFont = useCallback((e) => {
+    restoreQuillRange();
+    quillRef.current?.getEditor()?.format('font', e.target.value);
+  }, [restoreQuillRange]);
+
+  const applySize = useCallback((e) => {
+    restoreQuillRange();
+    quillRef.current?.getEditor()?.format('size', e.target.value);
+  }, [restoreQuillRange]);
+
+  const applyColor = useCallback((e) => {
+    const c = e.target.value;
+    setColor(c);
+    restoreQuillRange();
+    quillRef.current?.getEditor()?.format('color', c);
+  }, [restoreQuillRange]);
 
   const updateStrokes = useCallback((newStrokes) => {
     setNotes(p => p.map(n => n.id === eid ? { ...n, strokes: newStrokes, updatedAt: new Date().toISOString() } : n));
@@ -431,31 +564,25 @@ export default function App() {
     try {
       const canvas = drawingCanvasRef.current?.getCanvas();
       if (!canvas) throw new Error('no-canvas');
-      const dpr   = window.devicePixelRatio || 1;
-      const pad   = 24;
-      const minX  = Math.max(0, Math.min(...penPts.map(p => p.x)) - pad);
-      const maxX  = Math.min(canvas.offsetWidth,  Math.max(...penPts.map(p => p.x)) + pad);
-      const minY  = Math.max(0, Math.min(...penPts.map(p => p.y)) - pad);
-      const maxY  = Math.min(canvas.offsetHeight, Math.max(...penPts.map(p => p.y)) + pad);
-      const cropW = Math.max(1, maxX - minX);
-      const cropH = Math.max(1, maxY - minY);
-      const tmp   = document.createElement('canvas');
-      tmp.width   = Math.round(cropW * dpr);
-      tmp.height  = Math.round(cropH * dpr);
+      const dpr = window.devicePixelRatio || 1, pad = 24;
+      const minX = Math.max(0, Math.min(...penPts.map(p => p.x)) - pad);
+      const maxX = Math.min(canvas.offsetWidth, Math.max(...penPts.map(p => p.x)) + pad);
+      const minY = Math.max(0, Math.min(...penPts.map(p => p.y)) - pad);
+      const maxY = Math.min(canvas.offsetHeight, Math.max(...penPts.map(p => p.y)) + pad);
+      const cropW = Math.max(1, maxX - minX), cropH = Math.max(1, maxY - minY);
+      const tmp = document.createElement('canvas');
+      tmp.width = Math.round(cropW * dpr); tmp.height = Math.round(cropH * dpr);
       const tmpCtx = tmp.getContext('2d');
-      tmpCtx.fillStyle = '#ffffff';
-      tmpCtx.fillRect(0, 0, tmp.width, tmp.height);
+      tmpCtx.fillStyle = '#ffffff'; tmpCtx.fillRect(0, 0, tmp.width, tmp.height);
       tmpCtx.drawImage(canvas, Math.round(minX * dpr), Math.round(minY * dpr), Math.round(cropW * dpr), Math.round(cropH * dpr), 0, 0, tmp.width, tmp.height);
       const base64Data = tmp.toDataURL('image/png').split(',')[1];
-
       let response;
       try {
         response = await fetch('/api/anthropic/v1/messages', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'anthropic-dangerous-direct-browser-access': 'true' },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-6',
-            max_tokens: 1024,
+            model: 'claude-sonnet-4-6', max_tokens: 1024,
             system: 'You are a handwriting recognition assistant. The user will send you an image of handwritten notes on a canvas. Your job is to transcribe the handwriting as accurately as possible into plain text. Preserve the structure of the writing. For bullet points: use "- " (dash + space) for top-level bullets and "  - " (two spaces + dash + space) for visually indented sub-bullets that appear further to the right beneath a parent bullet. If there are numbered lists transcribe them as numbered lists. Keep multiple lines as separate lines and preserve other indentation. Return only the transcribed text with no explanation or commentary.',
             messages: [{ role: 'user', content: [
               { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64Data } },
@@ -464,26 +591,22 @@ export default function App() {
           }),
         });
       } catch (fetchErr) { console.error('Fetch error:', fetchErr); throw fetchErr; }
-
       if (!response.ok) {
-        let errorBody; try { errorBody = await response.json(); } catch { errorBody = await response.text(); }
-        console.error('API error:', response.status, errorBody); throw new Error(`HTTP ${response.status}`);
+        let eb; try { eb = await response.json(); } catch { eb = await response.text(); }
+        console.error('API error:', response.status, eb); throw new Error(`HTTP ${response.status}`);
       }
-
-      const data    = await response.json();
+      const data = await response.json();
       const rawText = data.content?.[0]?.text;
       if (!rawText?.trim()) throw new Error('empty');
       const html = formatRecognizedText(rawText);
-
       setDrawMode(false); setEraserActive(false);
       await new Promise(r => requestAnimationFrame(r));
-
-      const editor   = editorRef.current;
+      const quill = quillRef.current?.getEditor();
       const scrollEl = editorScrollRef.current;
-      if (editor) {
-        const existing  = editor.innerHTML || '';
-        const separator = existing ? '<p><br></p>' : '';
-        editor.innerHTML = existing + separator + html;
+      if (quill) {
+        const len = quill.getLength();
+        if (len > 1) quill.insertText(len - 1, '\n', 'user');
+        quill.clipboard.dangerouslyPasteHTML(quill.getLength() - 1, html);
         onEditorInput();
         if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
       }
@@ -515,214 +638,190 @@ export default function App() {
     );
   }
 
-  // ── Auth gate ──────────────────────────────────────────────────────────────
-
-  if (!session && !isGuest) {
-    return <AuthScreen onSignIn={handleSignIn} onSignUp={handleSignUp} onGuest={handleGuestMode} error={authError} loading={authLoading} />;
-  }
-
-  // ── Main render ────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="app">
-      {/* Sidebar — authenticated only */}
-      {session && (
-        <>
-          <div className={`sidebar${sidebarOpen ? ' open' : ''}`}>
-            <div className="sb-head">
-              <span className="sb-heading">Notes</span>
-              <div className="sb-head-btns">
-                <button className="sb-icon-btn" onPointerDown={createFolder} title="New folder"><FolderPlusIcon /></button>
-                <button className="sb-new" onPointerDown={newNote} title="New note">＋</button>
+    <div className="app-root">
+      {/* Main app — only shown after animation completes */}
+      {showApp && (session || isGuest) && (
+        <motion.div
+          className="app"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.4, ease: 'easeOut' }}
+        >
+          {session && (
+            <>
+              <div className={`sidebar${sidebarOpen ? ' open' : ''}`}>
+                <div className="sb-head">
+                  <span className="sb-heading">Notes</span>
+                  <div className="sb-head-btns">
+                    <button className="sb-icon-btn" onPointerDown={createFolder} title="New folder"><FolderPlusIcon /></button>
+                    <button className="sb-new" onPointerDown={newNote} title="New note">＋</button>
+                  </div>
+                </div>
+                <div className="sb-list">
+                  {notes.filter(n => !n.folderId).map(n => renderSbNote(n))}
+                  {folders.map(folder => (
+                    <div key={folder.id} className="sb-folder">
+                      <div
+                        className={`sb-folder-head${activeFolderId === folder.id ? ' active' : ''}`}
+                        onPointerDown={() => { setActiveFolderId(folder.id); toggleFolder(folder.id); }}
+                      >
+                        <span className={`sb-folder-arrow${expandedFolderIds.has(folder.id) ? ' open' : ''}`}>▶</span>
+                        <span className="sb-folder-icon"><FolderIcon /></span>
+                        {renamingFolderId === folder.id ? (
+                          <input
+                            className="sb-folder-rename-input"
+                            defaultValue={folder.name} autoFocus
+                            onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}
+                            onBlur={e => renameFolder(folder.id, e.target.value)}
+                            onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setRenamingFolderId(null); }}
+                          />
+                        ) : (
+                          <span className="sb-folder-name" onDoubleClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); }}>
+                            {folder.name}
+                          </span>
+                        )}
+                        <button className="sb-del" onPointerDown={e => { e.stopPropagation(); deleteFolder(folder.id, folder.name); }} title="Delete folder">×</button>
+                      </div>
+                      {expandedFolderIds.has(folder.id) && (
+                        <div className="sb-folder-notes">
+                          {notes.filter(n => n.folderId === folder.id).map(n => renderSbNote(n, true))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {sidebarOpen && <div className="sb-overlay" onPointerDown={() => setSidebarOpen(false)} />}
+            </>
+          )}
+
+          <div className="main">
+            <div className="topbar">
+              {session && <button className="tbtn" onPointerDown={() => setSidebarOpen(s => !s)} title="All notes"><MenuIcon /></button>}
+              <input className="title-input" value={activeNote?.title || ''} onChange={e => setTitle(e.target.value)} placeholder="Untitled" />
+              {session && saveStatus !== 'idle' && (
+                <span className={`save-status save-status-${saveStatus}`}>
+                  {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'saved' ? 'Saved ✓' : 'Save failed'}
+                </span>
+              )}
+              {session ? (
+                <div className="user-area">
+                  <span className="user-email">{session.user.email}</span>
+                  <button className="tbtn signout-btn" onPointerDown={handleSignOut}>Sign Out</button>
+                </div>
+              ) : (
+                <button className="tbtn signout-btn" onPointerDown={handleGuestSignIn}>Sign In</button>
+              )}
+            </div>
+
+            <div className="toolbar" role="toolbar">
+              <div className="toolbar-group">
+                <select className="tb-select font-select" defaultValue="Arial" onFocus={saveQuillRange} onChange={applyFont}>
+                  {FONT_FAMILIES.map(f => <option key={f} value={f}>{f}</option>)}
+                </select>
+                <select className="tb-select size-select" defaultValue="16px" onFocus={saveQuillRange} onChange={applySize}>
+                  {FONT_SIZES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                </select>
+              </div>
+              <span className="tb-div" />
+              <div className="toolbar-group">
+                <button className={tbtn(formats.bold)}      onPointerDown={e => execBtn(e,'bold')}      title="Bold"><b>B</b></button>
+                <button className={tbtn(formats.italic)}    onPointerDown={e => execBtn(e,'italic')}    title="Italic"><i>I</i></button>
+                <button className={tbtn(formats.underline)} onPointerDown={e => execBtn(e,'underline')} title="Underline"><u>U</u></button>
+              </div>
+              <span className="tb-div" />
+              <div className="toolbar-group">
+                <label className="tbtn color-btn" title="Text color">
+                  <span className="color-a" style={{ '--c': color }}>A</span>
+                  <input type="color" value={color} onFocus={saveQuillRange} onChange={applyColor} className="sr-only" />
+                </label>
+              </div>
+              <span className="tb-div" />
+              <div className="toolbar-group">
+                <button className={tbtn(formats.justifyLeft)}   onPointerDown={e => execBtn(e,'justifyLeft')}   title="Left"><AlignLeftIcon /></button>
+                <button className={tbtn(formats.justifyCenter)} onPointerDown={e => execBtn(e,'justifyCenter')} title="Center"><AlignCenterIcon /></button>
+                <button className={tbtn(formats.justifyRight)}  onPointerDown={e => execBtn(e,'justifyRight')}  title="Right"><AlignRightIcon /></button>
+              </div>
+              <span className="tb-div" />
+              <div className="toolbar-group">
+                <button className={tbtn(formats.insertUnorderedList)} onPointerDown={e => execBtn(e,'insertUnorderedList')} title="Bullets"><BulletListIcon /></button>
+                <button className={tbtn(formats.insertOrderedList)}   onPointerDown={e => execBtn(e,'insertOrderedList')}   title="Numbers"><span className="list-num">1.</span></button>
+              </div>
+              <span className="tb-div" />
+              <div className="toolbar-group">
+                <button className="tbtn" onPointerDown={e => execBtn(e,'outdent')} title="Decrease indent"><OutdentIcon /></button>
+                <button className="tbtn" onPointerDown={e => execBtn(e,'indent')}  title="Increase indent"><IndentIcon /></button>
+              </div>
+              <span className="tb-div" />
+              <div className="toolbar-group">
+                <button
+                  className={tbtn(drawMode)}
+                  onPointerDown={() => { setDrawMode(m => { if (m) { drawingCanvasRef.current?.clearCanvas(); updateStrokes([]); } return !m; }); setEraserActive(false); }}
+                  title={drawMode ? 'Switch to typing' : 'Switch to drawing'}
+                >
+                  {drawMode ? <KeyboardIcon /> : <PenIcon />}
+                </button>
+                {drawMode && (
+                  <button className={tbtn(eraserActive)} onPointerDown={() => setEraserActive(e => !e)} title={eraserActive ? 'Switch to pen' : 'Eraser'}>
+                    <EraserIcon />
+                  </button>
+                )}
+                {drawMode && (
+                  <button className="tbtn" onPointerDown={() => convertDrawingToText()} title="Convert handwriting to text"
+                    disabled={converting || !hasStrokes} style={{ opacity: (!hasStrokes && !converting) ? 0.4 : 1 }}>
+                    {converting ? <SpinnerIcon /> : <WandIcon />}
+                  </button>
+                )}
               </div>
             </div>
-            <div className="sb-list">
-              {/* Top-level notes */}
-              {notes.filter(n => !n.folderId).map(n => renderSbNote(n))}
-              {/* Folders */}
-              {folders.map(folder => (
-                <div key={folder.id} className="sb-folder">
-                  <div
-                    className={`sb-folder-head${activeFolderId === folder.id ? ' active' : ''}`}
-                    onPointerDown={() => { setActiveFolderId(folder.id); toggleFolder(folder.id); }}
-                  >
-                    <span className={`sb-folder-arrow${expandedFolderIds.has(folder.id) ? ' open' : ''}`}>▶</span>
-                    <span className="sb-folder-icon"><FolderIcon /></span>
-                    {renamingFolderId === folder.id ? (
-                      <input
-                        className="sb-folder-rename-input"
-                        defaultValue={folder.name}
-                        autoFocus
-                        onClick={e => e.stopPropagation()}
-                        onPointerDown={e => e.stopPropagation()}
-                        onBlur={e => renameFolder(folder.id, e.target.value)}
-                        onKeyDown={e => {
-                          e.stopPropagation();
-                          if (e.key === 'Enter') e.target.blur();
-                          if (e.key === 'Escape') setRenamingFolderId(null);
-                        }}
-                      />
-                    ) : (
-                      <span
-                        className="sb-folder-name"
-                        onDoubleClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); }}
-                      >
-                        {folder.name}
-                      </span>
-                    )}
-                    <button
-                      className="sb-del"
-                      onPointerDown={e => { e.stopPropagation(); deleteFolder(folder.id, folder.name); }}
-                      title="Delete folder"
-                    >×</button>
-                  </div>
-                  {expandedFolderIds.has(folder.id) && (
-                    <div className="sb-folder-notes">
-                      {notes.filter(n => n.folderId === folder.id).map(n => renderSbNote(n, true))}
-                    </div>
-                  )}
-                </div>
-              ))}
+
+            {isGuest && (
+              <div className="guest-banner">
+                Guest mode — notes are not saved to the cloud. Use <strong>Sign In</strong> above to keep your notes.
+              </div>
+            )}
+
+            {drawMode && <div className="scroll-zone-hint" />}
+
+            <div className="editor-scroll" ref={editorScrollRef}>
+              <div className="editor-layer">
+                <ReactQuill
+                  ref={quillRef}
+                  theme="snow"
+                  modules={{ toolbar: false }}
+                  className={`quill-editor${drawMode ? ' draw-mode' : ''}`}
+                  placeholder="Start typing your note…"
+                  onChange={(_, __, source) => { if (source === 'user') onEditorInput(); }}
+                  onChangeSelection={(range) => {
+                    if (range) savedQuillRange.current = range;
+                    refreshFormats();
+                  }}
+                />
+                <DrawingCanvas
+                  ref={drawingCanvasRef} noteId={eid}
+                  initialStrokes={activeNote?.strokes || []}
+                  onStrokesChange={updateStrokes}
+                  drawMode={drawMode} eraser={eraserActive}
+                  scrollElRef={editorScrollRef}
+                />
+              </div>
             </div>
+            {convertError && <div className="convert-error">{convertError}</div>}
           </div>
-          {sidebarOpen && <div className="sb-overlay" onPointerDown={() => setSidebarOpen(false)} />}
-        </>
+        </motion.div>
       )}
 
-      <div className="main">
-        {/* Topbar */}
-        <div className="topbar">
-          {session && (
-            <button className="tbtn" onPointerDown={() => setSidebarOpen(s => !s)} title="All notes"><MenuIcon /></button>
-          )}
-          <input
-            className="title-input"
-            value={activeNote?.title || ''}
-            onChange={e => setTitle(e.target.value)}
-            placeholder="Untitled"
-          />
-          {session && saveStatus !== 'idle' && (
-            <span className={`save-status save-status-${saveStatus}`}>
-              {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'saved' ? 'Saved ✓' : 'Save failed'}
-            </span>
-          )}
-          {session ? (
-            <div className="user-area">
-              <span className="user-email">{session.user.email}</span>
-              <button className="tbtn signout-btn" onPointerDown={handleSignOut}>Sign Out</button>
-            </div>
-          ) : (
-            <button className="tbtn signout-btn" onPointerDown={handleGuestSignIn}>Sign In</button>
-          )}
-        </div>
-
-        {/* Toolbar */}
-        <div className="toolbar" role="toolbar">
-          <div className="toolbar-group">
-            <select className="tb-select font-select" defaultValue="Arial" onFocus={saveRange} onChange={applyFont}>
-              {FONT_FAMILIES.map(f => <option key={f} value={f}>{f}</option>)}
-            </select>
-            <select className="tb-select size-select" defaultValue="3" onFocus={saveRange} onChange={applySize}>
-              {FONT_SIZES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-            </select>
-          </div>
-          <span className="tb-div" />
-          <div className="toolbar-group">
-            <button className={tbtn(formats.bold)}          onPointerDown={e => execBtn(e,'bold')}          title="Bold"><b>B</b></button>
-            <button className={tbtn(formats.italic)}        onPointerDown={e => execBtn(e,'italic')}        title="Italic"><i>I</i></button>
-            <button className={tbtn(formats.underline)}     onPointerDown={e => execBtn(e,'underline')}     title="Underline"><u>U</u></button>
-            <button className={tbtn(formats.strikeThrough)} onPointerDown={e => execBtn(e,'strikeThrough')} title="Strikethrough"><s>S</s></button>
-          </div>
-          <span className="tb-div" />
-          <div className="toolbar-group">
-            <label className="tbtn color-btn" title="Text color">
-              <span className="color-a" style={{ '--c': color }}>A</span>
-              <input type="color" value={color} onFocus={saveRange} onChange={applyColor} className="sr-only" />
-            </label>
-          </div>
-          <span className="tb-div" />
-          <div className="toolbar-group">
-            <button className={tbtn(formats.justifyLeft)}   onPointerDown={e => execBtn(e,'justifyLeft')}   title="Left"><AlignLeftIcon /></button>
-            <button className={tbtn(formats.justifyCenter)} onPointerDown={e => execBtn(e,'justifyCenter')} title="Center"><AlignCenterIcon /></button>
-            <button className={tbtn(formats.justifyRight)}  onPointerDown={e => execBtn(e,'justifyRight')}  title="Right"><AlignRightIcon /></button>
-          </div>
-          <span className="tb-div" />
-          <div className="toolbar-group">
-            <button className={tbtn(formats.insertUnorderedList)} onPointerDown={e => execBtn(e,'insertUnorderedList')} title="Bullets"><BulletListIcon /></button>
-            <button className={tbtn(formats.insertOrderedList)}   onPointerDown={e => execBtn(e,'insertOrderedList')}   title="Numbers"><span className="list-num">1.</span></button>
-          </div>
-          <span className="tb-div" />
-          <div className="toolbar-group">
-            <button className="tbtn" onPointerDown={e => execBtn(e,'outdent')} title="Decrease indent"><OutdentIcon /></button>
-            <button className="tbtn" onPointerDown={e => execBtn(e,'indent')}  title="Increase indent"><IndentIcon /></button>
-          </div>
-          <span className="tb-div" />
-          <div className="toolbar-group">
-            <button
-              className={tbtn(drawMode)}
-              onPointerDown={() => {
-                setDrawMode(m => { if (m) { drawingCanvasRef.current?.clearCanvas(); updateStrokes([]); } return !m; });
-                setEraserActive(false);
-              }}
-              title={drawMode ? 'Switch to typing' : 'Switch to drawing'}
-            >
-              {drawMode ? <KeyboardIcon /> : <PenIcon />}
-            </button>
-            {drawMode && (
-              <button className={tbtn(eraserActive)} onPointerDown={() => setEraserActive(e => !e)} title={eraserActive ? 'Switch to pen' : 'Eraser'}>
-                <EraserIcon />
-              </button>
-            )}
-            {drawMode && (
-              <button
-                className="tbtn"
-                onPointerDown={() => convertDrawingToText()}
-                title="Convert handwriting to text"
-                disabled={converting || !hasStrokes}
-                style={{ opacity: (!hasStrokes && !converting) ? 0.4 : 1 }}
-              >
-                {converting ? <SpinnerIcon /> : <WandIcon />}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Guest banner */}
-        {isGuest && (
-          <div className="guest-banner">
-            Guest mode — notes are not saved to the cloud. Use <strong>Sign In</strong> above to keep your notes.
-          </div>
-        )}
-
-        {drawMode && <div className="scroll-zone-hint" />}
-
-        <div className="editor-scroll" ref={editorScrollRef}>
-          <div className="editor-layer">
-            <div
-              ref={editorRef}
-              className={`editor${drawMode ? ' draw-mode' : ''}`}
-              contentEditable={!drawMode}
-              suppressContentEditableWarning
-              role="textbox"
-              aria-multiline="true"
-              data-placeholder="Start typing your note…"
-              onInput={onEditorInput}
-              onBlur={saveRange}
-            />
-            <DrawingCanvas
-              ref={drawingCanvasRef}
-              noteId={eid}
-              initialStrokes={activeNote?.strokes || []}
-              onStrokesChange={updateStrokes}
-              drawMode={drawMode}
-              eraser={eraserActive}
-              scrollElRef={editorScrollRef}
-            />
-          </div>
-        </div>
-
-        {convertError && <div className="convert-error">{convertError}</div>}
-      </div>
+      {/* Notebook cover — kept in DOM until 100ms after animation so crossfade can overlap */}
+      {(!showApp || openingBook) && (
+        <NotebookCover
+          onSignIn={handleSignIn} onSignUp={handleSignUp}
+          onGuest={handleGuestMode} error={authError} loading={authLoading}
+          opening={openingBook}
+        />
+      )}
     </div>
   );
 }
@@ -753,26 +852,21 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
   useEffect(() => { if (!eraser && eraserCursorRef.current) eraserCursorRef.current.style.display = 'none'; redraw(); }, [eraser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const canvas = canvasRef.current; if (!canvas) return;
     function resize() {
-      const parent = canvas.parentElement;
-      if (!parent) return;
-      const dpr = window.devicePixelRatio || 1;
-      const w = canvas.offsetWidth, h = canvas.offsetHeight;
+      const parent = canvas.parentElement; if (!parent) return;
+      const dpr = window.devicePixelRatio || 1, w = canvas.offsetWidth, h = canvas.offsetHeight;
       if (!w || !h) return;
       canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
       const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr); ctxRef.current = ctx; redraw();
     }
     resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(canvas.parentElement);
+    const ro = new ResizeObserver(resize); ro.observe(canvas.parentElement);
     return () => ro.disconnect();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function redraw() {
-    const ctx = ctxRef.current, canvas = canvasRef.current;
-    if (!ctx || !canvas) return;
+    const ctx = ctxRef.current, canvas = canvasRef.current; if (!ctx || !canvas) return;
     const dpr = window.devicePixelRatio || 1;
     ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
     for (const s of strokesRef.current) s.erase ? applyErase(ctx, s.pts) : paintStroke(ctx, s.pts);
@@ -806,8 +900,7 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
   }
 
   function getPoint(e) {
-    const scrollEl = scrollElRef.current;
-    if (!scrollEl) return { x: 0, y: 0, t: Date.now() };
+    const scrollEl = scrollElRef.current; if (!scrollEl) return { x: 0, y: 0, t: Date.now() };
     const rect = scrollEl.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top + scrollEl.scrollTop, t: Date.now() };
   }
@@ -815,8 +908,7 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
   function updateEraserCursor(e) {
     if (!eraserCursorRef.current) return;
     const pt = getPoint(e);
-    eraserCursorRef.current.style.left = pt.x + 'px';
-    eraserCursorRef.current.style.top  = pt.y + 'px';
+    eraserCursorRef.current.style.left = pt.x + 'px'; eraserCursorRef.current.style.top = pt.y + 'px';
     eraserCursorRef.current.style.display = 'block';
   }
 
@@ -831,9 +923,8 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
     }
     e.preventDefault(); canvasRef.current.setPointerCapture(e.pointerId);
     isDrawingRef.current = true;
-    const pt = getPoint(e);
     if (eraser) updateEraserCursor(e);
-    liveRef.current = { pts: [pt], erasing: eraser }; redraw();
+    liveRef.current = { pts: [getPoint(e)], erasing: eraser }; redraw();
   }
 
   function onPointerMove(e) {
@@ -856,8 +947,7 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
     isDrawingRef.current = false;
     if (liveRef.current && liveRef.current.pts.length > 0) {
       const newStroke = liveRef.current.erasing ? { pts: liveRef.current.pts, erase: true } : { pts: liveRef.current.pts };
-      strokesRef.current = [...strokesRef.current, newStroke];
-      onStrokesChange([...strokesRef.current]);
+      strokesRef.current = [...strokesRef.current, newStroke]; onStrokesChange([...strokesRef.current]);
     }
     liveRef.current = null; redraw();
   }
@@ -866,10 +956,7 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
 
   return (
     <>
-      <canvas
-        ref={canvasRef}
-        className={`draw-canvas${drawMode ? ' active' : ''}`}
-        style={{ cursor }}
+      <canvas ref={canvasRef} className={`draw-canvas${drawMode ? ' active' : ''}`} style={{ cursor }}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove}
         onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onPointerLeave={onPointerLeave}
       />
@@ -882,8 +969,7 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
 
 function MenuIcon() {
   return <svg width="20" height="16" viewBox="0 0 20 16" fill="currentColor" aria-hidden="true">
-    <rect x="0" y="0"    width="20" height="2.5" rx="1.25"/>
-    <rect x="0" y="6.75" width="20" height="2.5" rx="1.25"/>
+    <rect x="0" y="0"    width="20" height="2.5" rx="1.25"/><rect x="0" y="6.75" width="20" height="2.5" rx="1.25"/>
     <rect x="0" y="13.5" width="20" height="2.5" rx="1.25"/>
   </svg>;
 }
@@ -902,8 +988,7 @@ function KeyboardIcon() {
 }
 function EraserIcon() {
   return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
-    <rect x="3" y="2" width="12" height="8" rx="1.5" opacity="0.85"/>
-    <rect x="0" y="11.5" width="18" height="2" rx="1"/>
+    <rect x="3" y="2" width="12" height="8" rx="1.5" opacity="0.85"/><rect x="0" y="11.5" width="18" height="2" rx="1"/>
   </svg>;
 }
 function WandIcon() {
@@ -920,20 +1005,20 @@ function SpinnerIcon() {
 }
 function AlignLeftIcon() {
   return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
-    <rect x="0" y="0"  width="18" height="2" rx="1"/><rect x="0" y="4"  width="13" height="2" rx="1"/>
-    <rect x="0" y="8"  width="16" height="2" rx="1"/><rect x="0" y="12" width="10" height="2" rx="1"/>
+    <rect x="0" y="0" width="18" height="2" rx="1"/><rect x="0" y="4"  width="13" height="2" rx="1"/>
+    <rect x="0" y="8" width="16" height="2" rx="1"/><rect x="0" y="12" width="10" height="2" rx="1"/>
   </svg>;
 }
 function AlignCenterIcon() {
   return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
-    <rect x="0"   y="0"  width="18" height="2" rx="1"/><rect x="2.5" y="4"  width="13" height="2" rx="1"/>
-    <rect x="1"   y="8"  width="16" height="2" rx="1"/><rect x="4"   y="12" width="10" height="2" rx="1"/>
+    <rect x="0"   y="0" width="18" height="2" rx="1"/><rect x="2.5" y="4"  width="13" height="2" rx="1"/>
+    <rect x="1"   y="8" width="16" height="2" rx="1"/><rect x="4"   y="12" width="10" height="2" rx="1"/>
   </svg>;
 }
 function AlignRightIcon() {
   return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
-    <rect x="0" y="0"  width="18" height="2" rx="1"/><rect x="5" y="4"  width="13" height="2" rx="1"/>
-    <rect x="2" y="8"  width="16" height="2" rx="1"/><rect x="8" y="12" width="10" height="2" rx="1"/>
+    <rect x="0" y="0" width="18" height="2" rx="1"/><rect x="5" y="4"  width="13" height="2" rx="1"/>
+    <rect x="2" y="8" width="16" height="2" rx="1"/><rect x="8" y="12" width="10" height="2" rx="1"/>
   </svg>;
 }
 function BulletListIcon() {
@@ -945,18 +1030,14 @@ function BulletListIcon() {
 }
 function IndentIcon() {
   return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
-    <rect x="7" y="0"  width="11" height="2" rx="1"/>
-    <rect x="7" y="6"  width="11" height="2" rx="1"/>
-    <rect x="7" y="12" width="11" height="2" rx="1"/>
-    <path d="M0 3L5 7L0 11Z"/>
+    <rect x="7" y="0" width="11" height="2" rx="1"/><rect x="7" y="6"  width="11" height="2" rx="1"/>
+    <rect x="7" y="12" width="11" height="2" rx="1"/><path d="M0 3L5 7L0 11Z"/>
   </svg>;
 }
 function OutdentIcon() {
   return <svg width="18" height="14" viewBox="0 0 18 14" fill="currentColor" aria-hidden="true">
-    <rect x="7" y="0"  width="11" height="2" rx="1"/>
-    <rect x="7" y="6"  width="11" height="2" rx="1"/>
-    <rect x="7" y="12" width="11" height="2" rx="1"/>
-    <path d="M5 3L0 7L5 11Z"/>
+    <rect x="7" y="0" width="11" height="2" rx="1"/><rect x="7" y="6"  width="11" height="2" rx="1"/>
+    <rect x="7" y="12" width="11" height="2" rx="1"/><path d="M5 3L0 7L5 11Z"/>
   </svg>;
 }
 function FolderIcon() {

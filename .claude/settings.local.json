@@ -26,7 +26,23 @@
       "Bash(npm start *)",
       "PowerShell($pid = \\(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($pid\\) { Stop-Process -Id $pid -Force; Write-Host \"Killed PID $pid\" } else { Write-Host \"Nothing on port 3000\" })",
       "PowerShell($proc = \\(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($proc\\) { Stop-Process -Id $proc -Force; Write-Host \"Killed PID $proc\" } else { Write-Host \"Nothing on port 3000\" })",
-      "PowerShell($proc = \\(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($proc\\) { Stop-Process -Id $proc -Force; Write-Host \"Killed PID $proc\" } else { Write-Host \"Port 3000 is free\" })"
+      "PowerShell($proc = \\(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($proc\\) { Stop-Process -Id $proc -Force; Write-Host \"Killed PID $proc\" } else { Write-Host \"Port 3000 is free\" })",
+      "Bash(Start-Sleep -Seconds 8)",
+      "Bash(Get-Content \"C:\\\\Users\\\\jessa\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-jessa-notes-app\\\\3bbbd5f1-a67c-4750-acf3-ff6f5a858988\\\\tasks\\\\br5ri862n.output\")",
+      "Bash(Select-Object -Last 20)",
+      "Bash(node *)",
+      "Bash(npx playwright@latest chromium --version)",
+      "Bash(npx playwright@latest --help)",
+      "Bash(python3 *)",
+      "Bash(npm uninstall *)",
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(netstat -ano)",
+      "Bash(findstr \":3000\")",
+      "Bash(findstr \"LISTENING\")",
+      "Bash(taskkill /PID 9396 /F)",
+      "PowerShell(Stop-Process -Id 9396 -Force)",
+      "Bash(npm list *)",
+      "Bash(where playwright *)"
     ]
   }
 }
