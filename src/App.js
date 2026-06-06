@@ -51,10 +51,11 @@ const FONT_FAMILIES = [
 const FONT_SIZES = ['10pt','12pt','14pt','16pt','18pt','20pt','22pt','24pt','26pt','28pt'];
 
 function makeNote(folderId = null) {
-  return { id: Date.now(), title: 'Untitled', content: '', strokes: [], updatedAt: new Date().toISOString(), folderId };
+  return { id: 'local-' + Date.now(), title: 'Untitled', content: '', strokes: [], updatedAt: new Date().toISOString(), folderId };
 }
+function isLocalId(id) { return typeof id === 'string' && id.startsWith('local-'); }
 function mapNote(row) {
-  return { id: row.id, title: row.title || 'Untitled', content: row.content || '', strokes: [], updatedAt: row.updated_at, folderId: row.folder_id || null };
+  return { id: row.id, userId: row.user_id, title: row.title || 'Untitled', content: row.content || '', strokes: [], updatedAt: row.updated_at, folderId: row.folder_id || null };
 }
 function stripHtml(h) { return h.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(); }
 function formatDate(iso) {
@@ -114,6 +115,45 @@ function formatRecognizedText(raw) {
   }).join('');
 }
 
+// ── Breadcrumb bar ──────────────────────────────────────────────────────────────
+
+function BreadcrumbBar({ note, folder, onRenameTitle }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const startEdit = () => { setDraft(note?.title || ''); setEditing(true); };
+  const commit = () => {
+    setEditing(false);
+    const t = draft.trim() || 'Untitled';
+    if (t !== (note?.title || 'Untitled')) onRenameTitle(t);
+  };
+
+  return (
+    <div className="breadcrumb">
+      <span className="bc-crumb">Notes</span>
+      {folder && (
+        <>
+          <span className="bc-sep">›</span>
+          <span className="bc-crumb">{folder.name}</span>
+        </>
+      )}
+      <span className="bc-sep">›</span>
+      {editing ? (
+        <input
+          className="bc-title-input"
+          value={draft}
+          autoFocus
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
+        />
+      ) : (
+        <span className="bc-title" onClick={startEdit}>{note?.title || 'Untitled'}</span>
+      )}
+    </div>
+  );
+}
+
 // ── Notebook Cover (Framer Motion) ─────────────────────────────────────────────
 
 function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening }) {
@@ -121,7 +161,6 @@ function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening })
   const [password, setPassword] = useState('');
   const coverControls = useAnimation();
   const sceneControls = useAnimation();
-  const rings = Array.from({ length: 22 }, (_, i) => i);
 
   useEffect(() => {
     if (!opening) return;
@@ -157,10 +196,8 @@ function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening })
         <div className="nb-page nb-page-b" />
         <div className="nb-page nb-page-c" />
 
-        {/* Fixed spine — the hinge point, never moves */}
-        <div className="nb-spine">
-          {rings.map(i => <div key={i} className="nb-ring" />)}
-        </div>
+        {/* Spine — hardcover binding strip */}
+        <div className="nb-spine" />
 
         {/* Perspective container for 3D cover */}
         <div className="nb-perspective">
@@ -242,7 +279,6 @@ export default function App() {
   const [renamingFolderId, setRenamingFolderId]   = useState(null);
 
   // UI
-  const [sidebarOpen, setSidebarOpen]   = useState(false);
   const [drawMode, setDrawMode]         = useState(false);
   const [eraserActive, setEraserActive] = useState(false);
   const [converting, setConverting]     = useState(false);
@@ -250,6 +286,7 @@ export default function App() {
   const [saveStatus, setSaveStatus]     = useState('idle');
   const [formats, setFormats]           = useState({});
   const [color, setColor]               = useState('#000000');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Refs
   const quillRef          = useRef(null);   // ReactQuill component ref
@@ -264,6 +301,11 @@ export default function App() {
   // Stores the latest typed HTML per note id without triggering React re-renders.
   // doAutosave reads from here; React state is only updated at autosave time.
   const pendingContentRef = useRef({});
+  // True while a Supabase save is in flight — prevents eid-effect from resetting editor.
+  const isSavingRef = useRef(false);
+  // Set by doAutosave when a new note's local id transitions to its Supabase id.
+  // The eid effect reads this to skip the content paste on that specific transition.
+  const autosaveIdTransitionRef = useRef(null);
 
   useEffect(() => { notesRef.current = notes; }, [notes]);
   useEffect(() => { sessionRef.current = session; }, [session]);
@@ -303,22 +345,42 @@ export default function App() {
   useEffect(() => { if (isGuest) localStorage.setItem('notes-v2', JSON.stringify(notes)); }, [notes, isGuest]);
   useEffect(() => { if (isGuest && eid) localStorage.setItem('notes-active', JSON.stringify(eid)); }, [eid, isGuest]);
 
+  // Auto-expand the folder that contains the currently active note
+  useEffect(() => {
+    if (activeNote?.folderId) {
+      setExpandedFolderIds(prev => new Set([...prev, activeNote.folderId]));
+    }
+  }, [activeNote?.folderId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Autosave on note switch + sync editor content
   useEffect(() => {
+    let isIdTransition = false;
+
     if (prevEidRef.current && prevEidRef.current !== eid) {
-      if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
-      doAutosave(prevEidRef.current);
+      // Detect autosave ID transition (local- id → Supabase integer id).
+      // In that case the editor already has the right content — skip paste and double-save.
+      const t = autosaveIdTransitionRef.current;
+      isIdTransition = !!(t && t.from === prevEidRef.current && t.to === eid);
+      autosaveIdTransitionRef.current = null;
+
+      if (!isIdTransition) {
+        // Real note switch: flush the outgoing note, then load the incoming one below.
+        if (autosaveTimerRef.current) { clearTimeout(autosaveTimerRef.current); autosaveTimerRef.current = null; }
+        doAutosave(prevEidRef.current);
+      }
     }
+
     prevEidRef.current = eid;
-    const quillInst = quillRef.current?.getEditor();
-    if (quillInst) {
-      // Prefer pending (unsaved typed) content; fall back to React state from DB
-      const newContent = pendingContentRef.current[eid] ?? activeNote?.content ?? '';
-      // Skip paste when content already matches — prevents cursor reset on new-note ID
-      // transitions (numeric temp id → UUID) and rapid back-and-forth note switches
-      if (quillInst.root.innerHTML !== newContent) {
-        quillInst.clipboard.dangerouslyPasteHTML(newContent);
-        quillInst.setSelection(0, 0, 'silent');
+
+    // Only paste content into the editor on a real note switch, never on autosave transitions.
+    if (!isIdTransition) {
+      const quillInst = quillRef.current?.getEditor();
+      if (quillInst) {
+        const newContent = pendingContentRef.current[eid] ?? activeNote?.content ?? '';
+        if (quillInst.root.innerHTML !== newContent) {
+          quillInst.clipboard.dangerouslyPasteHTML(newContent);
+          quillInst.setSelection(0, 0, 'silent');
+        }
       }
     }
   }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -354,18 +416,24 @@ export default function App() {
   const doAutosave = useCallback(async (noteId) => {
     const note = notesRef.current.find(n => n.id === noteId);
     if (!note) return;
-    // pendingContentRef always has the latest typed HTML; fall back to stored note content
-    const content = pendingContentRef.current[noteId] ?? note.content;
+    // Read content fresh from the editor if it's still the active note; otherwise use the
+    // pending buffer (editor shows a different note after a note switch).
+    const editorInst = quillRef.current?.getEditor();
+    const content = pendingContentRef.current[noteId]
+      ?? (editorInst ? editorInst.root.innerHTML : note.content);
+
     const sess = sessionRef.current;
-    // Guest mode: no Supabase, just flush content into React state so localStorage fires
+    // Guest mode: flush to React state so the localStorage effect fires.
     if (!sess) {
       setNotes(p => p.map(n => n.id === noteId ? { ...n, content, updatedAt: new Date().toISOString() } : n));
       delete pendingContentRef.current[noteId];
       return;
     }
+
+    isSavingRef.current = true;
     setSaveStatus('saving');
     const now = new Date().toISOString();
-    const isNew = typeof note.id === 'number';
+    const isNew = isLocalId(note.id);
     try {
       if (isNew) {
         const { data, error } = await supabase.from('notes')
@@ -373,6 +441,13 @@ export default function App() {
           .select().single();
         if (error) throw error;
         const saved = mapNote(data);
+        // Transfer pending buffer to the new Supabase id so any post-save keystrokes aren't lost.
+        if (pendingContentRef.current[noteId] !== undefined) {
+          pendingContentRef.current[saved.id] = pendingContentRef.current[noteId];
+        }
+        delete pendingContentRef.current[noteId];
+        // Signal the eid effect that the upcoming eid change is an id transition, not a note switch.
+        autosaveIdTransitionRef.current = { from: noteId, to: saved.id };
         setNotes(p => p.map(n => n.id === noteId ? { ...saved, strokes: n.strokes } : n));
         setActiveId(cur => cur === noteId ? saved.id : cur);
       } else {
@@ -380,19 +455,21 @@ export default function App() {
           .update({ title: note.title, content, updated_at: now })
           .eq('id', note.id);
         if (error) throw error;
-        // Include content so React state stays current for note-switching
-        setNotes(p => p.map(n => n.id === noteId ? { ...n, content, updatedAt: now } : n));
+        delete pendingContentRef.current[noteId];
+        // Only update sidebar metadata — writing content into React state here would cause a
+        // re-render that presses stale content back into the editor and resets the cursor.
+        setNotes(p => p.map(n => n.id === noteId ? { ...n, updatedAt: now } : n));
       }
-      delete pendingContentRef.current[noteId];
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 2000);
     } catch { setSaveStatus('error'); }
+    finally { isSavingRef.current = false; }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function scheduleAutosave(noteId) {
     if (!sessionRef.current) return;
     if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-    autosaveTimerRef.current = setTimeout(() => doAutosave(noteId), 2000);
+    autosaveTimerRef.current = setTimeout(() => doAutosave(noteId), 3000);
   }
 
   // ── Auth handlers ──────────────────────────────────────────────────────────
@@ -482,8 +559,19 @@ export default function App() {
 
   async function deleteFolder(id, name) {
     if (!window.confirm(`Delete folder "${name}" and all its notes? This cannot be undone.`)) return;
-    await supabase.from('notes').delete().eq('folder_id', id);
-    await supabase.from('folders').delete().eq('id', id);
+    console.log('Attempting to delete folder:', id);
+    if (session) {
+      try {
+        const { error: notesErr } = await supabase.from('notes').delete().eq('folder_id', id).eq('user_id', session.user.id);
+        if (notesErr) { console.error('Supabase delete folder notes error:', JSON.stringify(notesErr)); alert(`Failed to delete folder notes: ${notesErr.message}`); return; }
+        const { error: folderErr } = await supabase.from('folders').delete().eq('id', id).eq('user_id', session.user.id);
+        if (folderErr) { console.error('Supabase delete folder error:', JSON.stringify(folderErr)); alert(`Failed to delete folder: ${folderErr.message}`); return; }
+      } catch (err) {
+        console.error('Exception deleting folder:', err);
+        alert(`Exception deleting folder: ${err.message}`);
+        return;
+      }
+    }
     const currentNotes = notesRef.current;
     const remaining = currentNotes.filter(n => n.folderId !== id);
     if (!remaining.length) {
@@ -500,15 +588,62 @@ export default function App() {
   // ── Note CRUD ──────────────────────────────────────────────────────────────
 
   const newNote = useCallback(() => {
-    const n = makeNote(activeFolderId);
-    setNotes(p => [n, ...p]); setActiveId(n.id); setSidebarOpen(false);
-  }, [activeFolderId]);
+    const n = makeNote(null);
+    setNotes(p => [n, ...p]); setActiveId(n.id);
+  }, []);
 
-  const openNote = useCallback((id) => { setActiveId(id); setSidebarOpen(false); }, []);
+  const newNoteInFolder = useCallback((folderId) => {
+    const n = makeNote(folderId);
+    setNotes(p => [n, ...p]); setActiveId(n.id);
+    setExpandedFolderIds(prev => new Set([...prev, folderId]));
+  }, []);
+
+  const openNote = useCallback((id) => { setActiveId(id); }, []);
 
   const deleteNote = useCallback(async (id, e) => {
     e.stopPropagation();
-    if (session && typeof id !== 'number') await supabase.from('notes').delete().eq('id', id);
+    const fullNote = notesRef.current.find(n => n.id === id);
+    console.log('Attempting to delete note id:', id, '(type:', typeof id, ')');
+    console.log('Full note object:', JSON.stringify(fullNote));
+    console.log('Session user_id:', session?.user?.id);
+    console.log('Note userId field:', fullNote?.userId);
+
+    if (session && !isLocalId(id)) {
+      try {
+        // First try with user_id filter (RLS-friendly)
+        const { data, error, status, statusText } = await supabase
+          .from('notes')
+          .delete()
+          .eq('id', id)
+          .eq('user_id', session.user.id)
+          .select();
+        console.log('Delete response:', status, statusText);
+        console.log('Delete error:', JSON.stringify(error));
+        console.log('Delete data:', JSON.stringify(data));
+
+        if (error) {
+          // If filtering by user_id failed, try without it (catches user_id mismatch)
+          console.warn('Retrying delete without user_id filter to check RLS vs mismatch...');
+          const { data: d2, error: e2, status: s2, statusText: st2 } = await supabase
+            .from('notes')
+            .delete()
+            .eq('id', id)
+            .select();
+          console.log('Retry response:', s2, st2);
+          console.log('Retry error:', JSON.stringify(e2));
+          console.log('Retry data:', JSON.stringify(d2));
+          if (e2) {
+            console.error('Both delete attempts failed. Final error:', JSON.stringify(e2));
+            alert(`Failed to delete note: ${e2.message}`);
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('Exception deleting note:', err);
+        alert(`Exception deleting note: ${err.message}`);
+        return;
+      }
+    }
     setNotes(prev => {
       const rest = prev.filter(n => n.id !== id);
       if (!rest.length) { const n = makeNote(); setActiveId(n.id); return [n]; }
@@ -575,7 +710,10 @@ export default function App() {
   // Stable handlers passed to QuillEditor — must not be recreated on every App render
   // so React.memo on QuillEditor can bail out during unrelated state changes.
   const handleEditorChange = useCallback((_, __, source) => {
-    if (source === 'user') onEditorInput();
+    if (source === 'user') {
+      onEditorInput();
+      if (!isSavingRef.current) setSidebarCollapsed(true);
+    }
   }, [onEditorInput]);
 
   const handleSelectionChange = useCallback((range) => {
@@ -590,6 +728,31 @@ export default function App() {
     e.preventDefault();
     const quill = quillRef.current?.getEditor();
     if (!quill) return;
+
+    // List commands: if getSelection() returns null (can happen on first click before focus
+    // settles), focus and apply after a 10ms delay so the DOM has time to register focus.
+    if (cmd === 'insertUnorderedList' || cmd === 'insertOrderedList') {
+      const listType = cmd === 'insertUnorderedList' ? 'bullet' : 'ordered';
+      const sel = quill.getSelection();
+      if (!sel) {
+        quill.focus();
+        setTimeout(() => {
+          const q = quillRef.current?.getEditor();
+          if (!q) return;
+          const s = lastSelectionRef.current;
+          if (s) q.setSelection(s.index, s.length, 'silent');
+          const fmt = q.getFormat();
+          q.format('list', fmt.list === listType ? false : listType);
+          refreshFormats();
+        }, 10);
+        return;
+      }
+      const f = quill.getFormat();
+      quill.format('list', f.list === listType ? false : listType);
+      refreshFormats();
+      return;
+    }
+
     // onMouseDown+preventDefault keeps editor focus, so getSelection() returns the live range.
     // Fall back to lastSelectionRef on touch devices or if focus was lost some other way.
     let sel = quill.getSelection();
@@ -600,16 +763,14 @@ export default function App() {
     }
     const f = quill.getFormat();
     switch (cmd) {
-      case 'bold':                quill.format('bold',      !f.bold);                              break;
-      case 'italic':              quill.format('italic',    !f.italic);                            break;
-      case 'underline':           quill.format('underline', !f.underline);                         break;
-      case 'justifyLeft':         quill.format('align',     false);                                break;
-      case 'justifyCenter':       quill.format('align',     'center');                             break;
-      case 'justifyRight':        quill.format('align',     'right');                              break;
-      case 'insertUnorderedList': quill.format('list', f.list === 'bullet'  ? false : 'bullet');   break;
-      case 'insertOrderedList':   quill.format('list', f.list === 'ordered' ? false : 'ordered');  break;
-      case 'indent':              quill.format('indent', '+1');                                    break;
-      case 'outdent':             quill.format('indent', '-1');                                    break;
+      case 'bold':          quill.format('bold',      !f.bold);      break;
+      case 'italic':        quill.format('italic',    !f.italic);    break;
+      case 'underline':     quill.format('underline', !f.underline); break;
+      case 'justifyLeft':   quill.format('align',     false);        break;
+      case 'justifyCenter': quill.format('align',     'center');     break;
+      case 'justifyRight':  quill.format('align',     'right');      break;
+      case 'indent':        quill.format('indent', '+1');            break;
+      case 'outdent':       quill.format('indent', '-1');            break;
       default: break;
     }
     refreshFormats();
@@ -731,72 +892,121 @@ export default function App() {
           animate={{ opacity: 1 }}
           transition={{ duration: 0.4, ease: 'easeOut' }}
         >
-          {session && (
-            <>
-              <div className={`sidebar${sidebarOpen ? ' open' : ''}`}>
-                <div className="sb-head">
-                  <span className="sb-heading">Notes</span>
-                  <div className="sb-head-btns">
-                    <button className="sb-icon-btn" onPointerDown={createFolder} title="New folder"><FolderPlusIcon /></button>
-                    <button className="sb-new" onPointerDown={newNote} title="New note">＋</button>
-                  </div>
-                </div>
-                <div className="sb-list">
-                  {notes.filter(n => !n.folderId).map(n => renderSbNote(n))}
-                  {folders.map(folder => (
-                    <div key={folder.id} className="sb-folder">
-                      <div
-                        className={`sb-folder-head${activeFolderId === folder.id ? ' active' : ''}`}
-                        onPointerDown={() => { setActiveFolderId(folder.id); toggleFolder(folder.id); }}
-                      >
-                        <span className={`sb-folder-arrow${expandedFolderIds.has(folder.id) ? ' open' : ''}`}>▶</span>
-                        <span className="sb-folder-icon"><FolderIcon /></span>
-                        {renamingFolderId === folder.id ? (
-                          <input
-                            className="sb-folder-rename-input"
-                            defaultValue={folder.name} autoFocus
-                            onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}
-                            onBlur={e => renameFolder(folder.id, e.target.value)}
-                            onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setRenamingFolderId(null); }}
-                          />
-                        ) : (
-                          <span className="sb-folder-name" onDoubleClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); }}>
-                            {folder.name}
-                          </span>
-                        )}
-                        <button className="sb-del" onPointerDown={e => { e.stopPropagation(); deleteFolder(folder.id, folder.name); }} title="Delete folder">×</button>
-                      </div>
-                      {expandedFolderIds.has(folder.id) && (
-                        <div className="sb-folder-notes">
-                          {notes.filter(n => n.folderId === folder.id).map(n => renderSbNote(n, true))}
-                        </div>
-                      )}
+          <div
+            className={`sidebar${sidebarCollapsed ? ' collapsed' : ''}`}
+            onPointerDown={() => { if (sidebarCollapsed) setSidebarCollapsed(false); }}
+          >
+            <button
+              className="sb-toggle"
+              onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(c => !c); }}
+              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              {sidebarCollapsed ? '›' : '‹'}
+            </button>
+            {sidebarCollapsed ? (
+              <div className="sb-mini-actions">
+                <button className="sb-mini-btn" onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(false); newNote(); }} title="New Note">+</button>
+              </div>
+            ) : (
+              <div className="sb-actions">
+                <button className="sb-btn sb-btn-primary" onPointerDown={newNote}>+ New Note</button>
+                {session && <button className="sb-btn sb-btn-secondary" onPointerDown={createFolder}>+ Folder</button>}
+              </div>
+            )}
+            <div className="sb-list">
+              {sidebarCollapsed ? (
+                <>
+                  {notes.filter(n => !n.folderId).map(n => (
+                    <div
+                      key={n.id}
+                      className={`sb-note-mini${n.id === eid ? ' active' : ''}`}
+                      onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(false); openNote(n.id); }}
+                      title={n.title || 'Untitled'}
+                    >
+                      <DocumentIcon />
                     </div>
                   ))}
-                </div>
-              </div>
-              {sidebarOpen && <div className="sb-overlay" onPointerDown={() => setSidebarOpen(false)} />}
-            </>
-          )}
+                  {session && folders.map(folder => {
+                    const folderNotes = notes.filter(n => n.folderId === folder.id);
+                    const containsActive = folderNotes.some(n => n.id === eid);
+                    return (
+                      <div
+                        key={folder.id}
+                        className={`sb-folder-mini${containsActive ? ' active' : ''}`}
+                        onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(false); setActiveFolderId(folder.id); toggleFolder(folder.id); }}
+                        title={folder.name}
+                      >
+                        <FolderIcon />
+                      </div>
+                    );
+                  })}
+                </>
+              ) : (
+                <>
+                  {notes.filter(n => !n.folderId).map(n => renderSbNote(n))}
+                  {session && folders.map(folder => {
+                    const isExpanded = expandedFolderIds.has(folder.id);
+                    const folderNotes = notes.filter(n => n.folderId === folder.id);
+                    const containsActive = folderNotes.some(n => n.id === eid);
+                    return (
+                      <div key={folder.id} className="sb-folder">
+                        <div
+                          className={`sb-folder-head${activeFolderId === folder.id || containsActive ? ' active' : ''}`}
+                          onPointerDown={() => { setActiveFolderId(folder.id); toggleFolder(folder.id); }}
+                        >
+                          <span className={`sb-folder-arrow${isExpanded ? ' open' : ''}`}>▶</span>
+                          <span className="sb-folder-icon"><FolderIcon /></span>
+                          {renamingFolderId === folder.id ? (
+                            <input
+                              className="sb-folder-rename-input"
+                              defaultValue={folder.name} autoFocus
+                              onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}
+                              onBlur={e => renameFolder(folder.id, e.target.value)}
+                              onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setRenamingFolderId(null); }}
+                            />
+                          ) : (
+                            <span className="sb-folder-name" onDoubleClick={e => { e.stopPropagation(); setRenamingFolderId(folder.id); }}>
+                              {folder.name}
+                            </span>
+                          )}
+                          <button className="sb-folder-add" onPointerDown={e => { e.stopPropagation(); newNoteInFolder(folder.id); }} title="New note in folder">+</button>
+                          <button className="sb-del sb-del-folder" onPointerDown={e => { e.stopPropagation(); deleteFolder(folder.id, folder.name); }} title="Delete folder">×</button>
+                        </div>
+                        {isExpanded && (
+                          <div className="sb-folder-notes">
+                            {folderNotes.map(n => renderSbNote(n, true))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          </div>
 
           <div className="main">
             <div className="topbar">
-              {session && <button className="tbtn" onPointerDown={() => setSidebarOpen(s => !s)} title="All notes"><MenuIcon /></button>}
-              <input className="title-input" value={activeNote?.title || ''} onChange={e => setTitle(e.target.value)} placeholder="Untitled" />
               {session && saveStatus !== 'idle' && (
                 <span className={`save-status save-status-${saveStatus}`}>
                   {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'saved' ? 'Saved ✓' : 'Save failed'}
                 </span>
               )}
               {session ? (
-                <div className="user-area">
+                <div className="user-area" style={{ marginLeft: 'auto' }}>
                   <span className="user-email">{session.user.email}</span>
                   <button className="tbtn signout-btn" onPointerDown={handleSignOut}>Sign Out</button>
                 </div>
               ) : (
-                <button className="tbtn signout-btn" onPointerDown={handleGuestSignIn}>Sign In</button>
+                <button className="tbtn signout-btn" style={{ marginLeft: 'auto' }} onPointerDown={handleGuestSignIn}>Sign In</button>
               )}
             </div>
+
+            <BreadcrumbBar
+              note={activeNote}
+              folder={activeNote?.folderId ? folders.find(f => f.id === activeNote.folderId) : null}
+              onRenameTitle={setTitle}
+            />
 
             <div className="toolbar" role="toolbar">
               <div className="toolbar-group">
@@ -1047,12 +1257,6 @@ const DrawingCanvas = React.forwardRef(function DrawingCanvas(
 
 // ── Icons ───────────────────────────────────────────────────────────────────────
 
-function MenuIcon() {
-  return <svg width="20" height="16" viewBox="0 0 20 16" fill="currentColor" aria-hidden="true">
-    <rect x="0" y="0"    width="20" height="2.5" rx="1.25"/><rect x="0" y="6.75" width="20" height="2.5" rx="1.25"/>
-    <rect x="0" y="13.5" width="20" height="2.5" rx="1.25"/>
-  </svg>;
-}
 function PenIcon() {
   return <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden="true">
     <path d="M13 2l3 3-9 9H4v-3L13 2z"/><line x1="11" y1="4" x2="14" y2="7"/>
