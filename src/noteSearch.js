@@ -23,32 +23,43 @@ export function searchNotes(notes, query) {
   const results = [];
   for (const n of notes) {
     const title = n.title || '';
-    const text = htmlToPlainText(n.content);
-    const orig = (title + '\n' + text).replace(/\n+/g, ' ');
-    const hay = orig.toLowerCase();
-    if (!tokens.every(t => hay.includes(t))) continue; // AND semantics
+    const body = htmlToPlainText(n.content).replace(/\n+/g, ' ').trim();
+    const hayTitle = title.toLowerCase();
+    const hayBody = body.toLowerCase();
+    // AND semantics over title + body: a note qualifies if every token appears
+    // in at least one of them.
+    if (!tokens.every(t => hayTitle.includes(t) || hayBody.includes(t))) continue;
 
-    let count = 0, firstPos = -1, firstLen = 0;
+    // Count occurrences across both title and body (unchanged total).
+    let count = 0;
     for (const t of tokens) {
-      let i = hay.indexOf(t);
-      while (i !== -1) {
-        count++;
-        if (firstPos === -1 || i < firstPos) { firstPos = i; firstLen = t.length; }
-        i = hay.indexOf(t, i + t.length);
+      for (const hay of [hayTitle, hayBody]) {
+        let i = hay.indexOf(t);
+        while (i !== -1) { count++; i = hay.indexOf(t, i + t.length); }
       }
     }
-    const start = Math.max(0, firstPos - 32);
-    const end = Math.min(orig.length, firstPos + firstLen + 48);
-    results.push({
-      id: n.id,
-      title: title || 'Untitled',
-      count,
-      snippet: {
-        before: (start > 0 ? '…' : '') + orig.slice(start, firstPos),
-        match: orig.slice(firstPos, firstPos + firstLen),
-        after: orig.slice(firstPos + firstLen, end) + (end < orig.length ? '…' : ''),
-      },
-    });
+
+    // Snippet is built from the BODY only — the note title is already shown on
+    // the result's heading row, so repeating it here is redundant.
+    let firstPos = -1, firstLen = 0;
+    for (const t of tokens) {
+      const i = hayBody.indexOf(t);
+      if (i !== -1 && (firstPos === -1 || i < firstPos)) { firstPos = i; firstLen = t.length; }
+    }
+    let snippet;
+    if (firstPos === -1) {
+      // Token(s) matched only in the title; show a lead-in of the body instead.
+      snippet = { before: '', match: '', after: body.slice(0, 80) + (body.length > 80 ? '…' : '') };
+    } else {
+      const start = Math.max(0, firstPos - 32);
+      const end = Math.min(body.length, firstPos + firstLen + 48);
+      snippet = {
+        before: (start > 0 ? '…' : '') + body.slice(start, firstPos),
+        match: body.slice(firstPos, firstPos + firstLen),
+        after: body.slice(firstPos + firstLen, end) + (end < body.length ? '…' : ''),
+      };
+    }
+    results.push({ id: n.id, title: title || 'Untitled', count, snippet });
   }
   return results.sort((a, b) => b.count - a.count);
 }
