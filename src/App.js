@@ -1,6 +1,10 @@
-import React, { useState, useRef, useCallback, useEffect, useImperativeHandle } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useImperativeHandle, useMemo } from 'react';
 import './App.css';
 import { supabase } from './supabaseClient';
+import LearningPlanPanel, { LearningPlanIcon } from './LearningPlanPanel';
+import RestructurePanel, { RestructureIcon } from './RestructurePanel';
+import { searchNotes, stripSearchHighlights } from './noteSearch';
+import { FindBar, SearchResults } from './FindBar';
 import { motion, useAnimation } from 'framer-motion';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
@@ -16,11 +20,22 @@ const Size = Quill.import('attributors/style/size');
 Size.whitelist = ['10pt','12pt','14pt','16pt','18pt','20pt','22pt','24pt','26pt','28pt'];
 Quill.register(Size, true);
 
+// Dedicated search-highlight format (classes ql-sh-on / ql-sh-active).
+// Separate from Quill's real background format so applying/clearing it can
+// never disturb the user's own formatting. Always applied with source
+// 'silent' so it never emits text-change / triggers autosave.
+const Parchment = Quill.import('parchment');
+const SearchHighlightAttr = new Parchment.ClassAttributor('search-highlight', 'ql-sh', {
+  scope: Parchment.Scope.INLINE,
+  whitelist: ['on', 'active'],
+});
+Quill.register(SearchHighlightAttr, true);
+
 // Stable module and format configs — must live outside App so the object/array references
 // never change. ReactQuill reinitializes Quill (resetting cursor to 0) whenever any
 // dirtyProp (modules, formats, bounds, theme, children) receives a new reference.
 const QUILL_MODULES = { toolbar: false };
-const QUILL_FORMATS = ['bold', 'italic', 'underline', 'list', 'indent', 'align', 'color', 'font', 'size'];
+const QUILL_FORMATS = ['bold', 'italic', 'underline', 'list', 'indent', 'align', 'color', 'font', 'size', 'search-highlight'];
 
 // Memoized wrapper so Quill never remounts due to unrelated App re-renders.
 const QuillEditor = React.memo(React.forwardRef(function QuillEditor(
@@ -287,6 +302,20 @@ export default function App() {
   const [formats, setFormats]           = useState({});
   const [color, setColor]               = useState('#000000');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [showPlanPanel, setShowPlanPanel]       = useState(false);
+  const [showRestructure, setShowRestructure]   = useState(false);
+  // Pre-restructure snapshot for one-click revert: { noteId, html } | null
+  const [restructureBackup, setRestructureBackup] = useState(null);
+
+  // Search (sidebar) + in-note find session { query } | null
+  const [searchQuery, setSearchQuery]     = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [findSession, setFindSession]     = useState(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(searchQuery), 250);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
 
   // Refs
   const quillRef          = useRef(null);   // ReactQuill component ref
@@ -313,6 +342,17 @@ export default function App() {
   // Derived
   const eid        = (activeId && notes.find(n => n.id === activeId)) ? activeId : notes[0]?.id;
   const activeNote = notes.find(n => n.id === eid) || notes[0];
+
+  // Cross-note search results (signed-in: notes from loadAll; guest: the
+  // notes-v2 localStorage set already loaded into state). Pending keystrokes
+  // are overlaid so fresh typing is searchable.
+  const searchResults = useMemo(() => {
+    if (!debouncedQuery.trim()) return null;
+    const src = notes.map(n => (
+      pendingContentRef.current[n.id] !== undefined ? { ...n, content: pendingContentRef.current[n.id] } : n
+    ));
+    return searchNotes(src, debouncedQuery);
+  }, [notes, debouncedQuery]);
 
   // ── Auth init ──────────────────────────────────────────────────────────────
 
@@ -419,8 +459,12 @@ export default function App() {
     // Read content fresh from the editor if it's still the active note; otherwise use the
     // pending buffer (editor shows a different note after a note switch).
     const editorInst = quillRef.current?.getEditor();
-    const content = pendingContentRef.current[noteId]
-      ?? (editorInst ? editorInst.root.innerHTML : note.content);
+    // stripSearchHighlights: belt-and-suspenders — search highlights must
+    // never reach storage, whichever source the content comes from.
+    const content = stripSearchHighlights(
+      pendingContentRef.current[noteId]
+        ?? (editorInst ? editorInst.root.innerHTML : note.content)
+    );
 
     const sess = sessionRef.current;
     // Guest mode: flush to React state so the localStorage effect fires.
@@ -600,6 +644,51 @@ export default function App() {
 
   const openNote = useCallback((id) => { setActiveId(id); }, []);
 
+  // Save a generated learning plan as a regular note, reusing the existing
+  // persistence flow: seeding pendingContentRef makes the eid effect paste the
+  // content into the editor, and doAutosave insert it through the normal path
+  // (guest mode persists via the localStorage effect instead).
+  const savePlanAsNote = useCallback((title, html) => {
+    const n = { ...makeNote(null), title: title || 'Learning Plan', content: html };
+    pendingContentRef.current[n.id] = html;
+    setNotes(p => [n, ...p]);
+    setActiveId(n.id);
+    scheduleAutosave(n.id);
+    setShowPlanPanel(false);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Restructure apply/revert ───────────────────────────────────────────────
+  // Both paste into the live editor and persist through the normal autosave
+  // machinery (immediate doAutosave flush for guests, debounced for sessions).
+
+  const setEditorHtml = useCallback((html) => {
+    const quill = quillRef.current?.getEditor();
+    if (!quill) return null;
+    quill.clipboard.dangerouslyPasteHTML(html);
+    quill.setSelection(0, 0, 'silent');
+    return quill.root.innerHTML; // what Quill actually kept
+  }, []);
+
+  const applyRestructure = useCallback((newHtml) => {
+    const quill = quillRef.current?.getEditor();
+    if (!quill) return;
+    setRestructureBackup({ noteId: eid, html: stripSearchHighlights(quill.root.innerHTML) });
+    const finalHtml = setEditorHtml(newHtml);
+    if (finalHtml === null) return;
+    pendingContentRef.current[eid] = finalHtml;
+    if (sessionRef.current) scheduleAutosave(eid); else doAutosave(eid);
+    setShowRestructure(false);
+  }, [eid, doAutosave, setEditorHtml]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const revertRestructure = useCallback(() => {
+    if (!restructureBackup || restructureBackup.noteId !== eid) return;
+    const finalHtml = setEditorHtml(restructureBackup.html);
+    if (finalHtml === null) return;
+    pendingContentRef.current[eid] = finalHtml;
+    if (sessionRef.current) scheduleAutosave(eid); else doAutosave(eid);
+    setRestructureBackup(null);
+  }, [restructureBackup, eid, doAutosave, setEditorHtml]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const deleteNote = useCallback(async (id, e) => {
     e.stopPropagation();
     const fullNote = notesRef.current.find(n => n.id === id);
@@ -662,7 +751,8 @@ export default function App() {
     if (!quill) return;
     // Store latest content in a ref — no setState, so no re-render on every keystroke.
     // doAutosave (and guest-mode persistence) flush this to React state on the 2s debounce.
-    pendingContentRef.current[eid] = quill.root.innerHTML;
+    // stripSearchHighlights: never let find-mode highlight spans into the buffer.
+    pendingContentRef.current[eid] = stripSearchHighlights(quill.root.innerHTML);
     scheduleAutosave(eid);
   }, [eid]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -694,7 +784,13 @@ export default function App() {
   const refreshFormats = useCallback(() => {
     const quill = quillRef.current?.getEditor();
     if (!quill) { setFormats({}); return; }
-    const f = quill.getFormat();
+    // getFormat() with no args calls getSelection(true), which FORCE-FOCUSES
+    // the editor — stealing focus from any other input (find bar, title
+    // fields) the moment the editor blurs. Read the selection without
+    // focusing and keep the last formats when the editor isn't focused.
+    const sel = quill.getSelection();
+    if (!sel) return;
+    const f = quill.getFormat(sel.index, sel.length);
     setFormats({
       bold:                !!f.bold,
       italic:              !!f.italic,
@@ -711,6 +807,9 @@ export default function App() {
   // so React.memo on QuillEditor can bail out during unrelated state changes.
   const handleEditorChange = useCallback((_, __, source) => {
     if (source === 'user') {
+      // Editing while find mode is open closes it (Word-style); the FindBar
+      // cleanup then removes all highlight spans from the editor.
+      setFindSession(null);
       onEditorInput();
       if (!isSavingRef.current) setSidebarCollapsed(true);
     }
@@ -913,6 +1012,20 @@ export default function App() {
                 {session && <button className="sb-btn sb-btn-secondary" onPointerDown={createFolder}>+ Folder</button>}
               </div>
             )}
+            {!sidebarCollapsed && (
+              <div className="sb-search-wrap">
+                <input
+                  className="sb-search"
+                  placeholder="Search notes…"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Escape') setSearchQuery(''); }}
+                />
+                {searchQuery && (
+                  <button className="sb-search-clear" onPointerDown={() => setSearchQuery('')} title="Clear search">×</button>
+                )}
+              </div>
+            )}
             <div className="sb-list">
               {sidebarCollapsed ? (
                 <>
@@ -941,6 +1054,11 @@ export default function App() {
                     );
                   })}
                 </>
+              ) : searchResults ? (
+                <SearchResults
+                  results={searchResults}
+                  onOpen={(id) => { openNote(id); setFindSession({ query: debouncedQuery }); }}
+                />
               ) : (
                 <>
                   {notes.filter(n => !n.folderId).map(n => renderSbNote(n))}
@@ -1069,7 +1187,33 @@ export default function App() {
                   </button>
                 )}
               </div>
+              <span className="tb-div" />
+              <div className="toolbar-group">
+                <button className="tbtn" onPointerDown={() => setShowPlanPanel(true)} title="Build learning plan from notes">
+                  <LearningPlanIcon />
+                </button>
+                <button className="tbtn" onPointerDown={() => setShowRestructure(true)} title="Restructure note">
+                  <RestructureIcon />
+                </button>
+              </div>
             </div>
+
+            {findSession && (
+              <FindBar
+                quillRef={quillRef}
+                contentKey={eid}
+                initialQuery={findSession.query}
+                onClose={() => setFindSession(null)}
+              />
+            )}
+
+            {restructureBackup && restructureBackup.noteId === eid && (
+              <div className="restore-bar">
+                <span>Note restructured — the previous version is kept until you dismiss this.</span>
+                <button className="restore-btn" onPointerDown={revertRestructure}>Revert</button>
+                <button className="restore-dismiss" onPointerDown={() => setRestructureBackup(null)} title="Dismiss">×</button>
+              </div>
+            )}
 
             {isGuest && (
               <div className="guest-banner">
@@ -1100,6 +1244,28 @@ export default function App() {
               </div>
             </div>
             {convertError && <div className="convert-error">{convertError}</div>}
+            {showPlanPanel && (
+              <LearningPlanPanel
+                // Overlay unsaved keystrokes: fresh typing lives in pendingContentRef
+                // until the next autosave flush, so state alone can be stale/empty.
+                notes={notes.map(n => (
+                  pendingContentRef.current[n.id] !== undefined
+                    ? { ...n, content: pendingContentRef.current[n.id] }
+                    : n
+                ))}
+                activeNoteId={eid}
+                onClose={() => setShowPlanPanel(false)}
+                onSaveAsNote={savePlanAsNote}
+              />
+            )}
+            {showRestructure && (
+              <RestructurePanel
+                noteTitle={activeNote?.title}
+                noteHtml={pendingContentRef.current[eid] ?? activeNote?.content ?? ''}
+                onClose={() => setShowRestructure(false)}
+                onApply={applyRestructure}
+              />
+            )}
           </div>
         </motion.div>
       )}
