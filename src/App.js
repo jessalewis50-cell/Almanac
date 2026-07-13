@@ -169,7 +169,7 @@ function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening })
       await coverControls.start({
         z: 22,
         scale: 1.02,
-        boxShadow: '0 22px 65px rgba(0,0,0,0.72), 0 10px 32px rgba(0,0,0,0.5)',
+        boxShadow: '0 22px 65px rgba(0,0,0,0.75), 0 0 80px rgba(124,108,255,0.28)',
         transition: { duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] },
       });
       // Phase 2 — Swing cover + fade entire scene simultaneously (500–2200ms)
@@ -206,7 +206,7 @@ function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening })
             animate={coverControls}
             initial={{
               rotateY: 0, scale: 1, z: 0, opacity: 1,
-              boxShadow: '0 10px 40px rgba(0,0,0,0.6), 0 4px 14px rgba(0,0,0,0.38)',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.65), 0 0 60px rgba(124,108,255,0.18)',
             }}
             style={{ originX: 0, originY: '50%', transformStyle: 'preserve-3d' }}
           >
