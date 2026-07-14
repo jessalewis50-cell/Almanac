@@ -59,7 +59,9 @@ export function searchNotes(notes, query) {
         after: body.slice(firstPos + firstLen, end) + (end < body.length ? '…' : ''),
       };
     }
-    results.push({ id: n.id, title: title || 'Untitled', count, snippet });
+    // folderName is optional — the caller may pre-resolve it (notes only carry
+    // folderId); results for foldered notes render as "Folder: Note".
+    results.push({ id: n.id, title: title || 'Untitled', folderName: n.folderName || null, count, snippet });
   }
   return results.sort((a, b) => b.count - a.count);
 }

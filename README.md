@@ -1,6 +1,6 @@
-# Notes App
+# Almanac
 
-A full-stack note-taking web application built as part of a product management portfolio. Designed and directed by a non-technical PM using Claude Code as the development agent — demonstrating end-to-end product ownership from concept to deployed product.
+Almanac is a full-stack note-taking web application built as part of a product management portfolio. Designed and directed by a non-technical PM using Claude Code as the development agent — demonstrating end-to-end product ownership from concept to deployed product.
 
 **Live App:** [notes-app-tau-livid.vercel.app](https://notes-app-tau-livid.vercel.app)
 
@@ -25,7 +25,7 @@ The app targets users who want a flexible digital notebook that supports both ty
 - **Folders and notes** — organize notes into folders, with support for nested structure
 - **Persistent sidebar** — always-visible navigation panel showing full folder and note tree
 - **Collapsible sidebar** — auto-collapses when typing to maximize writing space; expands on click
-- **Breadcrumb navigation** — always shows current location (e.g. Notes > Folder > Note Title)
+- **Breadcrumb navigation** — always shows current location (e.g. Almanac > Folder > Note Title)
 - **Inline renaming** — double-click any folder or note title to rename it
 - **Autosave** — notes save automatically 3 seconds after the user stops typing with a subtle status indicator; no manual save required
 

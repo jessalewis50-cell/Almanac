@@ -80,11 +80,14 @@ const FIDELITY_RULES = [
   'You must NOT invent facts, definitions, numbers, examples, or details that the note does not contain.',
 ].join('\n');
 
-export function buildRestructureSystemPrompt(purposeId, freeform) {
+export function buildRestructureSystemPrompt(purposeId, freeform, multi) {
   const p = PURPOSES.find(x => x.id === purposeId) || PURPOSES[0];
   return [
-    'You restructure a user\'s note so the same content serves a specific purpose better.',
+    'You restructure a user\'s notes so the same content serves a specific purpose better.',
     FIDELITY_RULES,
+    multi
+      ? 'MULTIPLE SOURCE NOTES: merge them into ONE cohesive restructured note. Deduplicate overlapping content; never keep two copies of the same fact.'
+      : '',
     HTML_RULES,
     `RESTRUCTURING PURPOSE — ${p.label}:`,
     p.template,
@@ -92,8 +95,10 @@ export function buildRestructureSystemPrompt(purposeId, freeform) {
   ].filter(Boolean).join('\n\n');
 }
 
-export function buildRestructureUserContent(title, text) {
-  return `Note title: ${title || 'Untitled'}\n\nNOTE CONTENT:\n${text}\n\nReturn the restructured note as HTML now.`;
+/** sources: [{ title, text }] — one block per selected note. */
+export function buildRestructureUserContent(sources) {
+  const blocks = sources.map(s => `--- Note: ${s.title || 'Untitled'} ---\n${s.text}`);
+  return `SOURCE NOTE${sources.length > 1 ? 'S' : ''}:\n${blocks.join('\n\n')}\n\nReturn the restructured note as HTML now.`;
 }
 
 // ── Sanitizer ────────────────────────────────────────────────────────────────

@@ -72,7 +72,12 @@ function isLocalId(id) { return typeof id === 'string' && id.startsWith('local-'
 function mapNote(row) {
   return { id: row.id, userId: row.user_id, title: row.title || 'Untitled', content: row.content || '', strokes: [], updatedAt: row.updated_at, folderId: row.folder_id || null };
 }
-function stripHtml(h) { return h.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(); }
+function stripHtml(h) {
+  return h.replace(/<[^>]*>/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
 function formatDate(iso) {
   if (!iso) return '';
   const d = new Date(iso), now = new Date();
@@ -145,7 +150,7 @@ function BreadcrumbBar({ note, folder, onRenameTitle }) {
 
   return (
     <div className="breadcrumb">
-      <span className="bc-crumb">Notes</span>
+      <span className="bc-crumb">Almanac</span>
       {folder && (
         <>
           <span className="bc-sep">›</span>
@@ -171,7 +176,7 @@ function BreadcrumbBar({ note, folder, onRenameTitle }) {
 
 // ── Notebook Cover (Framer Motion) ─────────────────────────────────────────────
 
-function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening }) {
+function NotebookCover({ onSignIn, onSignUp, onGuest, onForgotPassword, error, info, loading, opening }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const coverControls = useAnimation();
@@ -234,9 +239,8 @@ function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening })
                 <div className="nb-bookmark" />
                 <div className="nb-title-wrap">
                   <div className="nb-title-label">
-                    <h1 className="nb-title">Notes</h1>
+                    <h1 className="nb-title">Almanac</h1>
                   </div>
-                  <p className="nb-subtitle">keep your thoughts.</p>
                 </div>
                 <div className="nb-form">
                   <input
@@ -252,6 +256,7 @@ function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening })
                     autoComplete="current-password"
                   />
                   {error && <div className="nb-error">{error}</div>}
+                  {info && <div className="nb-info">{info}</div>}
                   <div className="nb-btn-row">
                     <button className="nb-btn-primary" onClick={() => onSignIn(email, password)} disabled={loading}>
                       {loading ? 'Please wait…' : 'Sign In'}
@@ -260,6 +265,13 @@ function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening })
                       Sign Up
                     </button>
                   </div>
+                  <button
+                    className="nb-btn-ghost nb-forgot"
+                    onClick={() => onForgotPassword(email)}
+                    disabled={loading}
+                  >
+                    Forgot password?
+                  </button>
                   <div className="nb-divider" />
                   <button className="nb-btn-ghost" onClick={onGuest} disabled={loading}>
                     Continue as Guest
@@ -274,6 +286,53 @@ function NotebookCover({ onSignIn, onSignUp, onGuest, error, loading, opening })
   );
 }
 
+// ── Password reset screen (after clicking the emailed recovery link) ──────────
+
+function PasswordResetScreen({ onDone }) {
+  const [pw1, setPw1] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  async function submit() {
+    if (pw1.length < 6) { setError('Password must be at least 6 characters.'); return; }
+    if (pw1 !== pw2)    { setError('Passwords do not match.'); return; }
+    setLoading(true); setError(null);
+    const { error: err } = await supabase.auth.updateUser({ password: pw1 });
+    setLoading(false);
+    if (err) { setError(err.message); return; }
+    onDone();
+  }
+
+  return (
+    <div className="auth-screen">
+      <div className="auth-card">
+        <h1 className="auth-title">Set a new password</h1>
+        <div className="auth-fields">
+          <input
+            className="auth-input" type="password" placeholder="New password"
+            value={pw1} autoFocus
+            onChange={e => setPw1(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && submit()}
+            autoComplete="new-password"
+          />
+          <input
+            className="auth-input" type="password" placeholder="Confirm new password"
+            value={pw2}
+            onChange={e => setPw2(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && submit()}
+            autoComplete="new-password"
+          />
+        </div>
+        {error && <div className="auth-error">{error}</div>}
+        <button className="auth-btn primary" onClick={submit} disabled={loading}>
+          {loading ? 'Saving…' : 'Save new password'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── App ─────────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -283,7 +342,9 @@ export default function App() {
   const [showApp, setShowApp]         = useState(false);
   const [openingBook, setOpeningBook] = useState(false);
   const [authError, setAuthError]     = useState(null);
+  const [authInfo, setAuthInfo]       = useState(null);
   const [authLoading, setAuthLoading] = useState(false);
+  const [recoveryMode, setRecoveryMode] = useState(false);
 
   // Notes & folders
   const [notes, setNotes]                         = useState([makeNote()]);
@@ -292,6 +353,11 @@ export default function App() {
   const [expandedFolderIds, setExpandedFolderIds] = useState(new Set());
   const [activeFolderId, setActiveFolderId]       = useState(null);
   const [renamingFolderId, setRenamingFolderId]   = useState(null);
+  const [renamingNoteId, setRenamingNoteId]       = useState(null);
+  // Folder view: when set, the main pane shows the folder's notes as tiles
+  // instead of the editor (which stays mounted but hidden — unmounting Quill
+  // would lose its live content, since content is only pasted on note switch).
+  const [viewFolderId, setViewFolderId]           = useState(null);
 
   // UI
   const [drawMode, setDrawMode]         = useState(false);
@@ -302,7 +368,8 @@ export default function App() {
   const [formats, setFormats]           = useState({});
   const [color, setColor]               = useState('#000000');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [showPlanPanel, setShowPlanPanel]       = useState(false);
+  // null | { source: 'top' } | { source: 'folder', folderId } | { source: 'note', noteId }
+  const [showPlanPanel, setShowPlanPanel]       = useState(null);
   const [showRestructure, setShowRestructure]   = useState(false);
   // Pre-restructure snapshot for one-click revert: { noteId, html } | null
   const [restructureBackup, setRestructureBackup] = useState(null);
@@ -342,17 +409,21 @@ export default function App() {
   // Derived
   const eid        = (activeId && notes.find(n => n.id === activeId)) ? activeId : notes[0]?.id;
   const activeNote = notes.find(n => n.id === eid) || notes[0];
+  const viewFolder = viewFolderId ? (folders.find(f => f.id === viewFolderId) || null) : null;
+  const viewFolderNotes = viewFolder ? notes.filter(n => n.folderId === viewFolder.id) : [];
 
   // Cross-note search results (signed-in: notes from loadAll; guest: the
   // notes-v2 localStorage set already loaded into state). Pending keystrokes
   // are overlaid so fresh typing is searchable.
   const searchResults = useMemo(() => {
     if (!debouncedQuery.trim()) return null;
-    const src = notes.map(n => (
-      pendingContentRef.current[n.id] !== undefined ? { ...n, content: pendingContentRef.current[n.id] } : n
-    ));
+    const src = notes.map(n => ({
+      ...n,
+      content: pendingContentRef.current[n.id] !== undefined ? pendingContentRef.current[n.id] : n.content,
+      folderName: n.folderId ? (folders.find(f => f.id === n.folderId)?.name || null) : null,
+    }));
     return searchNotes(src, debouncedQuery);
-  }, [notes, debouncedQuery]);
+  }, [notes, folders, debouncedQuery]);
 
   // ── Auth init ──────────────────────────────────────────────────────────────
 
@@ -365,6 +436,12 @@ export default function App() {
       if (!newSession) {
         // Sign-out: reset everything and show cover
         setSession(null); setIsGuest(false); setShowApp(false); setOpeningBook(false);
+        setRecoveryMode(false);
+      } else if (event === 'PASSWORD_RECOVERY') {
+        // Arrived via an emailed reset link: Supabase has already established
+        // a session, but the user must set a new password before entering the
+        // app — recoveryMode takes render precedence over cover and app.
+        setSession(newSession); setRecoveryMode(true); setShowApp(false); setOpeningBook(false);
       } else if (event === 'TOKEN_REFRESHED') {
         setSession(newSession);
       }
@@ -500,9 +577,13 @@ export default function App() {
           .eq('id', note.id);
         if (error) throw error;
         delete pendingContentRef.current[noteId];
-        // Only update sidebar metadata — writing content into React state here would cause a
-        // re-render that presses stale content back into the editor and resets the cursor.
-        setNotes(p => p.map(n => n.id === noteId ? { ...n, updatedAt: now } : n));
+        // Write the saved content back into state so the sidebar preview and
+        // cross-note search see fresh edits. Safe for the editor: QuillEditor
+        // is uncontrolled and memoized, and the eid effect only pastes content
+        // on an actual note switch — a state update alone never touches the
+        // editor DOM or cursor. (An older version skipped content here as a
+        // cursor-protection measure; that hazard no longer exists.)
+        setNotes(p => p.map(n => n.id === noteId ? { ...n, content, updatedAt: now } : n));
       }
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 2000);
@@ -519,7 +600,7 @@ export default function App() {
   // ── Auth handlers ──────────────────────────────────────────────────────────
 
   async function handleSignIn(email, password) {
-    setAuthLoading(true); setAuthError(null);
+    setAuthLoading(true); setAuthError(null); setAuthInfo(null);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) { setAuthError(error.message); setAuthLoading(false); return; }
     setAuthLoading(false);
@@ -530,7 +611,7 @@ export default function App() {
   }
 
   async function handleSignUp(email, password) {
-    setAuthLoading(true); setAuthError(null);
+    setAuthLoading(true); setAuthError(null); setAuthInfo(null);
     const { data, error } = await supabase.auth.signUp({ email, password });
     if (error) { setAuthError(error.message); setAuthLoading(false); return; }
     if (data?.session) {
@@ -543,6 +624,34 @@ export default function App() {
       setAuthError('Check your email to confirm your account.');
       setAuthLoading(false);
     }
+  }
+
+  async function handleForgotPassword(email) {
+    if (!email || !email.trim()) {
+      setAuthInfo(null);
+      setAuthError('Enter your email above first.');
+      return;
+    }
+    setAuthLoading(true); setAuthError(null); setAuthInfo(null);
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: window.location.origin,
+    });
+    setAuthLoading(false);
+    if (error) {
+      // Real failures only (rate limit, malformed email) — Supabase does not
+      // error for unknown addresses, so this never leaks registration status.
+      setAuthError(error.message);
+    } else {
+      setAuthInfo('If an account exists for that email, a reset link is on its way.');
+    }
+  }
+
+  function handleRecoveryDone() {
+    // Drop the recovery token from the URL so a reload doesn't re-trigger
+    // recovery mode; the session is already valid, go straight to the app.
+    window.history.replaceState(null, '', window.location.pathname);
+    setRecoveryMode(false);
+    setShowApp(true);
   }
 
   async function handleSignOut() {
@@ -594,6 +703,19 @@ export default function App() {
     });
   }
 
+  // Mirrors renameFolder: double-click a sidebar note title to rename it.
+  async function renameNote(id, name) {
+    const trimmed = (name || '').trim() || 'Untitled';
+    const now = new Date().toISOString();
+    setNotes(p => p.map(n => n.id === id ? { ...n, title: trimmed, updatedAt: now } : n));
+    setRenamingNoteId(null);
+    // Local-id notes get their title persisted by the first autosave insert;
+    // guest notes persist via the localStorage effect on setNotes.
+    if (sessionRef.current && !isLocalId(id)) {
+      await supabase.from('notes').update({ title: trimmed, updated_at: now }).eq('id', id);
+    }
+  }
+
   async function renameFolder(id, name) {
     const trimmed = (name || '').trim() || 'New Folder';
     await supabase.from('folders').update({ name: trimmed }).eq('id', id);
@@ -626,6 +748,7 @@ export default function App() {
     }
     setFolders(p => p.filter(f => f.id !== id));
     if (activeFolderId === id) setActiveFolderId(null);
+    setViewFolderId(v => (v === id ? null : v));
     setExpandedFolderIds(prev => { const next = new Set(prev); next.delete(id); return next; });
   }
 
@@ -634,28 +757,71 @@ export default function App() {
   const newNote = useCallback(() => {
     const n = makeNote(null);
     setNotes(p => [n, ...p]); setActiveId(n.id);
+    setViewFolderId(null);
   }, []);
 
   const newNoteInFolder = useCallback((folderId) => {
     const n = makeNote(folderId);
     setNotes(p => [n, ...p]); setActiveId(n.id);
     setExpandedFolderIds(prev => new Set([...prev, folderId]));
+    setViewFolderId(null);
   }, []);
 
-  const openNote = useCallback((id) => { setActiveId(id); }, []);
+  const openNote = useCallback((id) => { setActiveId(id); setViewFolderId(null); }, []);
 
-  // Save a generated learning plan as a regular note, reusing the existing
-  // persistence flow: seeding pendingContentRef makes the eid effect paste the
-  // content into the editor, and doAutosave insert it through the normal path
-  // (guest mode persists via the localStorage effect instead).
-  const savePlanAsNote = useCallback((title, html) => {
-    const n = { ...makeNote(null), title: title || 'Learning Plan', content: html };
+  // Enter folder view (from either sidebar state); drawing mode is a
+  // note-editing mode, so leave it when the editor goes off-screen.
+  const openFolderView = useCallback((folderId) => {
+    setViewFolderId(folderId);
+    setDrawMode(false);
+    setEraserActive(false);
+  }, []);
+
+  // Create a note from generated HTML, reusing the existing persistence flow:
+  // seeding pendingContentRef makes the eid effect paste the content into the
+  // editor, and doAutosave insert it through the normal path (guest mode
+  // persists via the localStorage effect instead). If created from folder
+  // view, the new note lands in that folder.
+  const createNoteFromHtml = useCallback((title, html) => {
+    const n = { ...makeNote(viewFolderId || null), title, content: html };
     pendingContentRef.current[n.id] = html;
     setNotes(p => [n, ...p]);
     setActiveId(n.id);
+    setViewFolderId(null);
     scheduleAutosave(n.id);
-    setShowPlanPanel(false);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [viewFolderId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Plans grounded in notes save as a plain note; plans built purely from the
+  // learner's description get their own new folder with the plan note inside.
+  // (Folders need a session — guests fall back to a plain note.)
+  const savePlanAsNote = useCallback(async (title, html, opts = {}) => {
+    const planTitle = title || 'Learning Plan';
+    if (opts.basedOnNotes === false && sessionRef.current) {
+      const { data: folder, error } = await supabase.from('folders')
+        .insert({ name: planTitle, user_id: sessionRef.current.user.id })
+        .select().single();
+      if (!error && folder) {
+        setFolders(p => [...p, folder]);
+        setExpandedFolderIds(s => new Set([...s, folder.id]));
+        const n = { ...makeNote(folder.id), title: planTitle, content: html };
+        pendingContentRef.current[n.id] = html;
+        setNotes(p => [n, ...p]);
+        setActiveId(n.id);
+        setViewFolderId(null);
+        scheduleAutosave(n.id);
+        setShowPlanPanel(null);
+        return;
+      }
+      // Folder creation failed — fall through and at least save the note.
+    }
+    createNoteFromHtml(planTitle, html);
+    setShowPlanPanel(null);
+  }, [createNoteFromHtml]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveRestructureAsNote = useCallback((title, html) => {
+    createNoteFromHtml(title || 'Restructured note', html);
+    setShowRestructure(false);
+  }, [createNoteFromHtml]);
 
   // ── Restructure apply/revert ───────────────────────────────────────────────
   // Both paste into the live editor and persist through the normal autosave
@@ -969,7 +1135,22 @@ export default function App() {
         className={`sb-note${n.id === eid ? ' active' : ''}${indented ? ' sb-note-indented' : ''}`}
         onPointerDown={() => openNote(n.id)}
       >
-        <div className="sb-note-title"><span className="sb-note-icon"><DocumentIcon /></span>{n.title || 'Untitled'}</div>
+        <div className="sb-note-title">
+          <span className="sb-note-icon"><DocumentIcon /></span>
+          {renamingNoteId === n.id ? (
+            <input
+              className="sb-note-rename-input"
+              defaultValue={n.title} autoFocus
+              onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()}
+              onBlur={e => renameNote(n.id, e.target.value)}
+              onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setRenamingNoteId(null); }}
+            />
+          ) : (
+            <span onDoubleClick={e => { e.stopPropagation(); setRenamingNoteId(n.id); }}>
+              {n.title || 'Untitled'}
+            </span>
+          )}
+        </div>
         <div className="sb-note-preview">{stripHtml(n.content).slice(0, 55) || 'No content'}</div>
         <div className="sb-note-foot">
           <span className="sb-date">{formatDate(n.updatedAt)}</span>
@@ -983,8 +1164,12 @@ export default function App() {
 
   return (
     <div className="app-root">
+      {/* Recovery mode wins over both cover and app: a reset link must land
+          on the password form, never silently log the user in. */}
+      {recoveryMode && <PasswordResetScreen onDone={handleRecoveryDone} />}
+
       {/* Main app — only shown after animation completes */}
-      {showApp && (session || isGuest) && (
+      {!recoveryMode && showApp && (session || isGuest) && (
         <motion.div
           className="app"
           initial={{ opacity: 0 }}
@@ -995,21 +1180,32 @@ export default function App() {
             className={`sidebar${sidebarCollapsed ? ' collapsed' : ''}`}
             onPointerDown={() => { if (sidebarCollapsed) setSidebarCollapsed(false); }}
           >
-            <button
-              className="sb-toggle"
-              onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(c => !c); }}
-              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            >
-              {sidebarCollapsed ? '›' : '‹'}
-            </button>
             {sidebarCollapsed ? (
-              <div className="sb-mini-actions">
-                <button className="sb-mini-btn" onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(false); newNote(); }} title="New Note">+</button>
-              </div>
+              <>
+                <button
+                  className="sb-toggle"
+                  onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(c => !c); }}
+                  title="Expand sidebar"
+                >
+                  ›
+                </button>
+                <div className="sb-mini-actions">
+                  <button className="sb-mini-btn" onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(false); newNote(); }} title="New Note">+</button>
+                </div>
+              </>
             ) : (
-              <div className="sb-actions">
-                <button className="sb-btn sb-btn-primary" onPointerDown={newNote}>+ New Note</button>
-                {session && <button className="sb-btn sb-btn-secondary" onPointerDown={createFolder}>+ Folder</button>}
+              <div className="sb-header">
+                <div className="sb-actions">
+                  <button className="sb-btn sb-btn-primary" onPointerDown={newNote}>+ New Note</button>
+                  {session && <button className="sb-btn sb-btn-secondary" onPointerDown={createFolder}>+ Folder</button>}
+                </div>
+                <button
+                  className="sb-toggle sb-toggle-inline"
+                  onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(c => !c); }}
+                  title="Collapse sidebar"
+                >
+                  ‹
+                </button>
               </div>
             )}
             {!sidebarCollapsed && (
@@ -1019,10 +1215,14 @@ export default function App() {
                   placeholder="Search notes…"
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Escape') setSearchQuery(''); }}
+                  onKeyDown={e => { if (e.key === 'Escape') { setSearchQuery(''); setFindSession(null); } }}
                 />
                 {searchQuery && (
-                  <button className="sb-search-clear" onPointerDown={() => setSearchQuery('')} title="Clear search">×</button>
+                  <button
+                    className="sb-search-clear"
+                    onPointerDown={() => { setSearchQuery(''); setFindSession(null); }}
+                    title="Clear search"
+                  >×</button>
                 )}
               </div>
             )}
@@ -1046,7 +1246,7 @@ export default function App() {
                       <div
                         key={folder.id}
                         className={`sb-folder-mini${containsActive ? ' active' : ''}`}
-                        onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(false); setActiveFolderId(folder.id); toggleFolder(folder.id); }}
+                        onPointerDown={e => { e.stopPropagation(); setSidebarCollapsed(false); setActiveFolderId(folder.id); toggleFolder(folder.id); openFolderView(folder.id); }}
                         title={folder.name}
                       >
                         <FolderIcon />
@@ -1070,7 +1270,7 @@ export default function App() {
                       <div key={folder.id} className="sb-folder">
                         <div
                           className={`sb-folder-head${activeFolderId === folder.id || containsActive ? ' active' : ''}`}
-                          onPointerDown={() => { setActiveFolderId(folder.id); toggleFolder(folder.id); }}
+                          onPointerDown={() => { setActiveFolderId(folder.id); toggleFolder(folder.id); openFolderView(folder.id); }}
                         >
                           <span className={`sb-folder-arrow${isExpanded ? ' open' : ''}`}>▶</span>
                           <span className="sb-folder-icon"><FolderIcon /></span>
@@ -1105,6 +1305,17 @@ export default function App() {
 
           <div className="main">
             <div className="topbar">
+              <div className="topbar-logo" aria-label="Almanac">
+                <span className="topbar-logo-text">Almanac</span>
+              </div>
+              <button
+                className="topbar-plan-btn"
+                onPointerDown={() => setShowPlanPanel({ source: 'top' })}
+                title="Build Learning Plan"
+              >
+                <LearningPlanIcon />
+                <span>Learning Plan</span>
+              </button>
               {session && saveStatus !== 'idle' && (
                 <span className={`save-status save-status-${saveStatus}`}>
                   {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'saved' ? 'Saved ✓' : 'Save failed'}
@@ -1120,13 +1331,22 @@ export default function App() {
               )}
             </div>
 
-            <BreadcrumbBar
-              note={activeNote}
-              folder={activeNote?.folderId ? folders.find(f => f.id === activeNote.folderId) : null}
-              onRenameTitle={setTitle}
-            />
+            {viewFolder ? (
+              <div className="breadcrumb">
+                <span className="bc-crumb">Almanac</span>
+                <span className="bc-sep">›</span>
+                <span className="bc-title">{viewFolder.name}</span>
+              </div>
+            ) : (
+              <BreadcrumbBar
+                note={activeNote}
+                folder={activeNote?.folderId ? folders.find(f => f.id === activeNote.folderId) : null}
+                onRenameTitle={setTitle}
+              />
+            )}
 
             <div className="toolbar" role="toolbar">
+              {!viewFolder && <>
               <div className="toolbar-group">
                 <select className="tb-select font-select" defaultValue="arial" onMouseDown={saveQuillRange} onChange={applyFont}>
                   {FONT_FAMILIES.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
@@ -1188,8 +1408,15 @@ export default function App() {
                 )}
               </div>
               <span className="tb-div" />
+              </>}
               <div className="toolbar-group">
-                <button className="tbtn" onPointerDown={() => setShowPlanPanel(true)} title="Build learning plan from notes">
+                <button
+                  className="tbtn"
+                  onPointerDown={() => setShowPlanPanel(viewFolder
+                    ? { source: 'folder', folderId: viewFolder.id }
+                    : { source: 'note', noteId: eid })}
+                  title="Build Learning Plan"
+                >
                   <LearningPlanIcon />
                 </button>
                 <button className="tbtn" onPointerDown={() => setShowRestructure(true)} title="Restructure note">
@@ -1198,16 +1425,17 @@ export default function App() {
               </div>
             </div>
 
-            {findSession && (
+            {findSession && !viewFolder && (
               <FindBar
                 quillRef={quillRef}
                 contentKey={eid}
                 initialQuery={findSession.query}
-                onClose={() => setFindSession(null)}
+                // Closing either search surface dismisses both.
+                onClose={() => { setFindSession(null); setSearchQuery(''); }}
               />
             )}
 
-            {restructureBackup && restructureBackup.noteId === eid && (
+            {restructureBackup && restructureBackup.noteId === eid && !viewFolder && (
               <div className="restore-bar">
                 <span>Note restructured — the previous version is kept until you dismiss this.</span>
                 <button className="restore-btn" onPointerDown={revertRestructure}>Revert</button>
@@ -1223,7 +1451,29 @@ export default function App() {
 
             {drawMode && <div className="scroll-zone-hint" />}
 
-            <div className="editor-scroll" ref={editorScrollRef}>
+            {viewFolder && (
+              <div className="folder-view">
+                <div className="fv-grid">
+                  {viewFolderNotes.map(n => (
+                    <div key={n.id} className="fv-tile" onPointerDown={() => openNote(n.id)} title={n.title || 'Untitled'}>
+                      <span className="fv-icon"><DocumentIcon /></span>
+                      <span className="fv-name">{n.title || 'Untitled'}</span>
+                    </div>
+                  ))}
+                  <div className="fv-tile fv-tile-new" onPointerDown={() => newNoteInFolder(viewFolder.id)} title="New note in this folder">
+                    <span className="fv-icon fv-plus">+</span>
+                    <span className="fv-name">New note</span>
+                  </div>
+                </div>
+                {viewFolderNotes.length === 0 && (
+                  <p className="fv-empty">This folder is empty — create its first note.</p>
+                )}
+              </div>
+            )}
+
+            {/* Editor stays mounted (hidden) in folder view so Quill's live
+                content survives; it is only re-pasted on note switches. */}
+            <div className="editor-scroll" ref={editorScrollRef} style={viewFolder ? { display: 'none' } : undefined}>
               <div className="editor-layer">
                 <div key="editor-stable">
                   <QuillEditor
@@ -1253,17 +1503,25 @@ export default function App() {
                     ? { ...n, content: pendingContentRef.current[n.id] }
                     : n
                 ))}
-                activeNoteId={eid}
-                onClose={() => setShowPlanPanel(false)}
+                folders={folders}
+                context={showPlanPanel}
+                onClose={() => setShowPlanPanel(null)}
                 onSaveAsNote={savePlanAsNote}
               />
             )}
             {showRestructure && (
               <RestructurePanel
-                noteTitle={activeNote?.title}
-                noteHtml={pendingContentRef.current[eid] ?? activeNote?.content ?? ''}
+                // Same pending-keystroke overlay as the plan panel.
+                notes={notes.map(n => (
+                  pendingContentRef.current[n.id] !== undefined
+                    ? { ...n, content: pendingContentRef.current[n.id] }
+                    : n
+                ))}
+                activeNoteId={eid}
+                initialSelectedIds={viewFolder ? viewFolderNotes.map(n => n.id) : undefined}
                 onClose={() => setShowRestructure(false)}
                 onApply={applyRestructure}
+                onSaveAsNote={saveRestructureAsNote}
               />
             )}
           </div>
@@ -1271,10 +1529,11 @@ export default function App() {
       )}
 
       {/* Notebook cover — kept in DOM until 100ms after animation so crossfade can overlap */}
-      {(!showApp || openingBook) && (
+      {!recoveryMode && (!showApp || openingBook) && (
         <NotebookCover
           onSignIn={handleSignIn} onSignUp={handleSignUp}
-          onGuest={handleGuestMode} error={authError} loading={authLoading}
+          onGuest={handleGuestMode} onForgotPassword={handleForgotPassword}
+          error={authError} info={authInfo} loading={authLoading}
           opening={openingBook}
         />
       )}

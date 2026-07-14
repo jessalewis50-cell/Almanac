@@ -24,7 +24,7 @@ const PLAN_SCHEMA_EXAMPLE = `{
 
 export const PLAN_SYSTEM_PROMPT = [
   'You are a learning-plan designer.',
-  'Base the plan strictly on the actual content of the notes the user provides — extract the real topics, terms, and skills that appear in them. Do not produce a generic curriculum that ignores the notes.',
+  'When notes are provided, base the plan strictly on their actual content — extract the real topics, terms, and skills that appear in them; do not produce a generic curriculum that ignores the notes. When no notes are provided, design the plan from the learner\'s own description of what they want to learn.',
   'Order milestones from foundational to advanced, with "order" starting at 1.',
   'Each milestone\'s estimatedHours must be realistic, and the milestone hours should sum to approximately estimatedTotalHours.',
   'Respect the learner parameters (level, weekly time, deadline, goal) when they are given.',
@@ -56,14 +56,29 @@ export function htmlToPlainText(html) {
     .join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-/** Build the user-turn content from note sources + optional learner params. */
-export function buildPlanUserContent(sources, { level, weeklyHours, deadline, goal } = {}) {
-  const params = [];
-  if (level) params.push(`Learner level: ${level}`);
-  if (weeklyHours) params.push(`Available study time: ${weeklyHours} hours per week`);
-  if (deadline) params.push(`Target deadline: ${deadline}`);
-  if (goal) params.push(`Learner's goal: ${goal}`);
+export const PLAN_ADJUST_SYSTEM_PROMPT = [
+  'You are adjusting an existing learning plan at the user\'s request.',
+  'Apply ONLY the requested changes; keep every other milestone and field as stable as possible (same names, order, wording) so the user can see exactly what changed.',
+  'Stay grounded: do not introduce topics that are in neither the original material nor the user\'s request.',
+  'Return ONLY a single JSON object exactly matching this schema — no prose, no explanations, no markdown fences:',
+  PLAN_SCHEMA_EXAMPLE,
+].join('\n');
 
+/** Content for an adjustment turn: original material + current plan + request. */
+export function buildPlanAdjustContent(baseContent, plan, request) {
+  return [
+    baseContent ? `ORIGINAL REQUEST AND MATERIAL:\n${String(baseContent).slice(0, 12000)}` : '',
+    `CURRENT PLAN (JSON):\n${JSON.stringify(plan)}`,
+    `REQUESTED ADJUSTMENT:\n${request}`,
+    'Return the full revised plan JSON now.',
+  ].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Build the user-turn content. Notes are optional: a plan can be grounded in
+ * selected notes, in the learner's free-text description, or both.
+ */
+export function buildPlanUserContent(sources, { comments } = {}) {
   let remaining = TOTAL_CHAR_CAP;
   const blocks = [];
   for (const s of sources) {
@@ -74,8 +89,8 @@ export function buildPlanUserContent(sources, { level, weeklyHours, deadline, go
   }
 
   return [
-    params.length ? `LEARNER PARAMETERS:\n${params.join('\n')}` : '',
-    `NOTES TO BASE THE PLAN ON:\n${blocks.join('\n\n')}`,
+    comments && comments.trim() ? `LEARNER'S REQUEST (in their own words):\n${comments.trim()}` : '',
+    blocks.length ? `NOTES TO BASE THE PLAN ON:\n${blocks.join('\n\n')}` : '',
     'Create the learning plan now. Respond with the JSON object only.',
   ].filter(Boolean).join('\n\n');
 }

@@ -91,6 +91,18 @@ describe('searchNotes', () => {
     expect(snip.before).toBe('');            // match is at the start of the body
   });
 
+  test('passes folderName through for foldered notes, null otherwise', () => {
+    const res = searchNotes(
+      [
+        { id: 'f', title: 'In folder', content: '<p>zebra</p>', folderName: 'Animals' },
+        { id: 'r', title: 'At root', content: '<p>zebra</p>' },
+      ],
+      'zebra'
+    );
+    expect(res.find(r => r.id === 'f').folderName).toBe('Animals');
+    expect(res.find(r => r.id === 'r').folderName).toBeNull();
+  });
+
   test('title-only match still surfaces the note, with a body lead-in snippet', () => {
     const res = searchNotes(
       [{ id: 'n', title: 'Groceries', content: '<p>milk and eggs</p>' }],

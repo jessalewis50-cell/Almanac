@@ -10,7 +10,10 @@ export function SearchResults({ results, onOpen }) {
       {results.map(r => (
         <div key={r.id} className="sr-row" onPointerDown={() => onOpen(r.id)}>
           <div className="sr-title-line">
-            <span className="sr-title">{r.title}</span>
+            <span className="sr-title">
+              {r.folderName && <span className="sr-folder">{r.folderName}: </span>}
+              {r.title}
+            </span>
             <span className="sr-count">{r.count}</span>
           </div>
           <div className="sr-snippet">
