@@ -83,6 +83,7 @@ async function logUsage(userId, model, usage) {
     });
     const { error } = await service.from('usage_events').insert({
       user_id: userId,
+      app: 'almanac',
       model,
       input_tokens: usage.input_tokens ?? 0,
       output_tokens: usage.output_tokens ?? 0,
