@@ -51,8 +51,8 @@ async function parseErrorResponse(response) {
   } catch {
     try { detail = await response.text(); } catch {}
   }
-  // The server's upgrade notice is already user-facing copy — show it verbatim.
-  if (code === 'upgrade_required' && detail) return detail;
+  // The server's upgrade/limit notices are already user-facing copy — verbatim.
+  if ((code === 'upgrade_required' || code === 'limit_reached') && detail) return detail;
   return detail ? `AI request failed (${response.status}): ${detail}` : `AI request failed (HTTP ${response.status})`;
 }
 

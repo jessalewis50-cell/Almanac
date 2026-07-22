@@ -175,6 +175,66 @@ function BreadcrumbBar({ note, folder, onRenameTitle }) {
   );
 }
 
+// ── AI credits meter (sidebar footer) ──────────────────────────────────────────
+// Percent of the monthly AI budget used — never raw dollars or tokens. Data
+// comes from /api/usage (same auth as the AI proxy); hidden for guests and
+// while loading.
+function UsageMeter({ session }) {
+  const [meter, setMeter] = useState(null);
+
+  useEffect(() => {
+    if (!session) { setMeter(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const auth = await authHeaders();
+        const res = await fetch('/api/usage', { headers: auth });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setMeter(data);
+      } catch { /* meter is decorative — fail silently */ }
+    })();
+    return () => { cancelled = true; };
+  }, [session]);
+
+  if (!session || !meter) return null;
+
+  const resets = new Date(meter.resets_at)
+    .toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+  if (meter.budget_microdollars <= 0) {
+    return (
+      <div className="sb-usage">
+        <div className="sb-usage-row"><span>AI features are part of Almanac Pro.</span></div>
+      </div>
+    );
+  }
+
+  const pct = meter.percent_used;
+  const atLimit = pct >= 100;
+  return (
+    <div className="sb-usage">
+      <div className="sb-usage-row">
+        <span className={atLimit ? 'sb-usage-alert' : ''}>
+          AI credits · {pct}% used — resets {resets}
+        </span>
+        <button
+          className="sb-usage-btn"
+          title="Top-ups coming soon: $3 → $1.50 of credits, $5 → $3.00 of credits"
+        >
+          Get more
+        </button>
+      </div>
+      <div className="sb-usage-track">
+        <div
+          className={`sb-usage-fill${atLimit ? ' sb-usage-fill-limit' : ''}`}
+          style={{ width: `${Math.min(100, pct)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ── Notebook Cover (Framer Motion) ─────────────────────────────────────────────
 
 function NotebookCover({ onSignIn, onSignUp, onGuest, onForgotPassword, error, info, loading, opening }) {
@@ -1102,7 +1162,7 @@ export default function App() {
       if (!response.ok) {
         let eb; try { eb = await response.json(); } catch { eb = await response.text(); }
         console.error('API error:', response.status, eb);
-        if (eb?.code === 'upgrade_required' && eb?.error) {
+        if ((eb?.code === 'upgrade_required' || eb?.code === 'limit_reached') && eb?.error) {
           throw new AIError(eb.error, { status: response.status, retryable: false });
         }
         throw new Error(`HTTP ${response.status}`);
@@ -1306,6 +1366,7 @@ export default function App() {
                 </>
               )}
             </div>
+            {!sidebarCollapsed && <UsageMeter session={session} />}
           </div>
 
           <div className="main">

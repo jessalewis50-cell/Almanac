@@ -73,49 +73,138 @@ function validateBody(body) {
   return null;
 }
 
-// Entitlement check — mirrors cadence/src/lib/entitlements.ts (the canonical
-// plan → entitlement mapping; keep the two in sync). Almanac AI requires the
-// almanac_pro or cadence_plus plan. No Stripe yet: a null current_period_end
-// means "valid through the end of the current calendar month" (UTC) and a
-// null subscription_status counts as active. Fails closed on read errors.
-async function hasAlmanacAI(userId) {
+// ── Entitlement + budget check (mirrors cadence/src/lib/entitlements.ts and
+// cadence/src/lib/aiBudget.ts — keep in sync). Almanac AI requires the
+// almanac_pro or cadence_plus plan AND remaining monthly AI budget.
+// No Stripe yet: a null current_period_end means "the current UTC calendar
+// month" (both for validity and for the metering period), and a null
+// subscription_status counts as active. Fails closed on read errors.
+
+const SONNET_PRICE = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }; // microdollars/token
+const PLAN_ALLOWANCES = { almanac_pro: 3_000_000, cadence_pro: 3_000_000, cadence_plus: 8_000_000 };
+
+function estimateCostMicrodollars(tokens) {
+  return Math.ceil(
+    tokens.input_tokens * SONNET_PRICE.input +
+    tokens.output_tokens * SONNET_PRICE.output +
+    tokens.cache_read_tokens * SONNET_PRICE.cacheRead +
+    tokens.cache_write_tokens * SONNET_PRICE.cacheWrite
+  );
+}
+
+function serviceClient() {
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!serviceKey || !SUPABASE_URL) return false;
-  const service = createClient(SUPABASE_URL, serviceKey, {
+  if (!serviceKey || !SUPABASE_URL) return null;
+  return createClient(SUPABASE_URL, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const { data, error } = await service
+}
+
+function billingPeriod(profile, now) {
+  if (profile?.current_period_end) {
+    const end = new Date(profile.current_period_end);
+    const start = new Date(end);
+    start.setUTCMonth(start.getUTCMonth() - 1);
+    return { start, end };
+  }
+  return {
+    start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
+    end: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)),
+  };
+}
+
+async function computeMeter(service, userId, profile, now) {
+  const { start, end } = billingPeriod(profile, now);
+  const allowance = (profile?.plans ?? []).reduce((s, p) => s + (PLAN_ALLOWANCES[p] ?? 0), 0);
+  const [usageRes, grantsRes] = await Promise.all([
+    service.from('usage_events').select('cost_microdollars')
+      .eq('user_id', userId)
+      .gte('created_at', start.toISOString()).lt('created_at', end.toISOString()),
+    service.from('credit_grants').select('amount_microdollars')
+      .eq('user_id', userId).gt('expires_at', now.toISOString()),
+  ]);
+  const used = (usageRes.data ?? []).reduce((s, r) => s + (r.cost_microdollars ?? 0), 0);
+  const credits = (grantsRes.data ?? []).reduce((s, r) => s + (r.amount_microdollars ?? 0), 0);
+  const budget = allowance + credits;
+  return {
+    allowance_microdollars: allowance,
+    credit_microdollars: credits,
+    budget_microdollars: budget,
+    used_microdollars: used,
+    remaining_microdollars: Math.max(0, budget - used),
+    percent_used: budget > 0 ? Math.min(100, Math.round((used / budget) * 100)) : 100,
+    resets_at: end.toISOString(),
+  };
+}
+
+// Returns null when access is granted, or { status, body } to send back.
+async function checkAlmanacAccess(userId) {
+  const service = serviceClient();
+  if (!service) return { status: 500, body: { error: 'Server is not configured.' } };
+  const now = new Date();
+
+  const { data: profile, error } = await service
     .from('profiles')
     .select('plans, subscription_status, current_period_end')
     .eq('user_id', userId)
     .maybeSingle();
-  if (error || !data) return false;
-  const status = data.subscription_status;
-  if (status !== null && status !== 'active' && status !== 'trialing') return false;
-  const now = new Date();
-  const end = data.current_period_end
-    ? new Date(data.current_period_end)
+
+  const upgrade = {
+    status: 403,
+    body: {
+      error: 'This is a paid feature — it needs Almanac Pro (or Cadence Plus).',
+      code: 'upgrade_required',
+      feature: 'almanac_ai',
+      required_plans: ['almanac_pro', 'cadence_plus'],
+    },
+  };
+  if (error || !profile) return upgrade;
+  const status = profile.subscription_status;
+  if (status !== null && status !== 'active' && status !== 'trialing') return upgrade;
+  const end = profile.current_period_end
+    ? new Date(profile.current_period_end)
     : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  if (end.getTime() <= now.getTime()) return false;
-  return data.plans.includes('almanac_pro') || data.plans.includes('cadence_plus');
+  if (end.getTime() <= now.getTime()) return upgrade;
+  if (!profile.plans.includes('almanac_pro') && !profile.plans.includes('cadence_plus')) {
+    return upgrade;
+  }
+
+  const meter = await computeMeter(service, userId, profile, now);
+  if (meter.used_microdollars >= meter.budget_microdollars) {
+    const resets = new Date(meter.resets_at)
+      .toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    return {
+      status: 402,
+      body: {
+        error: `You've used all your AI credits for this period — they reset on ${resets}. Top-ups are coming soon.`,
+        code: 'limit_reached',
+        feature: 'almanac_ai',
+        used_microdollars: meter.used_microdollars,
+        budget_microdollars: meter.budget_microdollars,
+        resets_at: meter.resets_at,
+      },
+    };
+  }
+  return null;
 }
 
 // Best-effort usage log — a logging failure must never fail the user's request.
 async function logUsage(userId, model, usage) {
   try {
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!serviceKey || !SUPABASE_URL || !usage) return;
-    const service = createClient(SUPABASE_URL, serviceKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-    const { error } = await service.from('usage_events').insert({
-      user_id: userId,
-      app: 'almanac',
-      model,
+    const service = serviceClient();
+    if (!service || !usage) return;
+    const tokens = {
       input_tokens: usage.input_tokens ?? 0,
       output_tokens: usage.output_tokens ?? 0,
       cache_read_tokens: usage.cache_read_input_tokens ?? 0,
       cache_write_tokens: usage.cache_creation_input_tokens ?? 0,
+    };
+    const { error } = await service.from('usage_events').insert({
+      user_id: userId,
+      app: 'almanac',
+      model,
+      ...tokens,
+      cost_microdollars: estimateCostMicrodollars(tokens),
     });
     if (error) console.warn('usage_events insert failed:', error.message);
   } catch (e) {
@@ -145,14 +234,10 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Sign in required.' });
   }
 
-  // ── 1b. Entitlement gate — paid plans only, checked before any Anthropic call
-  if (!(await hasAlmanacAI(user.id))) {
-    return res.status(403).json({
-      error: 'This is a paid feature — it needs Almanac Pro (or Cadence Plus).',
-      code: 'upgrade_required',
-      feature: 'almanac_ai',
-      required_plans: ['almanac_pro', 'cadence_plus'],
-    });
+  // ── 1b. Entitlement + budget gate — checked before any Anthropic call
+  const denied = await checkAlmanacAccess(user.id);
+  if (denied) {
+    return res.status(denied.status).json(denied.body);
   }
 
   // ── 2. Validate and rebuild the payload (never forward req.body as-is) ────
